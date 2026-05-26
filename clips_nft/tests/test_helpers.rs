@@ -121,8 +121,9 @@ pub fn set_royalty(ctx: &TestContext, token_id: TokenId, recipient: &Address, ba
 /// `sale_price` using a SEP-0041 token at `asset_address`.
 ///
 /// Steps performed:
-/// 1. Calls `pay_royalty` so recipients receive their cut.
-/// 2. Calls `transfer` to move ownership to `buyer`.
+/// 1. Configures the token royalty to use `asset_address`.
+/// 2. Calls `pay_royalty` from `seller` (marketplace payer in tests).
+/// 3. Calls `transfer` to move ownership to `buyer`.
 ///
 /// Returns the royalty amount that was distributed.
 ///
@@ -160,13 +161,12 @@ pub fn default_royalty(env: &Env, recipient: Address) -> Royalty {
     Royalty { recipients, asset_address: None }
 }
 
-/// Deploy a fresh SEP-0041 token, mint `amount` to `holder`, and return the
-/// token address. Useful for `simulate_sale` tests.
 /// Substring check for Soroban [`String`] values in native tests.
 pub fn string_contains(haystack: &String, needle: &str) -> bool {
     format!("{haystack}").contains(needle)
 }
 
+/// Deploy a fresh SEP-0041 token, mint `amount` to `holder`, and return the address.
 pub fn deploy_token(env: &Env, holder: &Address, amount: i128) -> Address {
     let token_admin = Address::generate(env);
     let addr = env.register_stellar_asset_contract_v2(token_admin.clone()).address();
