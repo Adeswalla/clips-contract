@@ -443,6 +443,13 @@ pub struct SignerUpdatedEvent {
     pub new_pubkey: BytesN<32>,
 }
 
+/// Emitted when the platform recipient address is updated by the admin.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PlatformRecipientUpdatedEvent {
+    pub new_recipient: Address,
+}
+
 /// Emitted when a token's royalty configuration is updated by the admin.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1274,6 +1281,19 @@ impl ClipsNftContract {
                 field: String::from_str(&env, "symbol"),
                 new_value: symbol,
             },
+        );
+        Ok(())
+    }
+
+    /// Update the platform recipient address that receives the default platform cut.
+    ///
+    /// ⚠️ **Access Control: Admin only.**
+    pub fn set_platform_recipient(env: Env, admin: Address, new_recipient: Address) -> Result<(), Error> {
+        Self::require_admin(&env, &admin)?;
+        env.storage().instance().set(&DataKey::PlatformRecipient, &new_recipient);
+        env.events().publish(
+            (symbol_short!("plat_rcp"),),
+            PlatformRecipientUpdatedEvent { new_recipient },
         );
         Ok(())
     }
