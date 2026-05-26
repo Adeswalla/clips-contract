@@ -286,6 +286,23 @@ pub enum DataKey {
     MintCooldownSeconds,
     /// Reentrancy guard for external token calls (instance).
     ReentrancyLock,
+
+    // -----------------------------------------------------------------------
+    // Enumeration index — O(1) token_by_index and token_of_owner_by_index
+    // -----------------------------------------------------------------------
+
+    /// Global active-token list: position → TokenId (persistent).
+    /// Maintained by mint (append) and burn (swap-and-pop).
+    TokenIndex(u32),
+    /// Reverse map for the global list: TokenId → position (persistent).
+    /// Required for O(1) swap-and-pop on burn.
+    TokenPosition(TokenId),
+    /// Per-owner active-token list: (owner, position) → TokenId (persistent).
+    /// Maintained by mint/transfer (append) and burn/transfer (swap-and-pop).
+    OwnerTokenIndex(Address, u32),
+    /// Reverse map for the per-owner list: TokenId → position (persistent).
+    /// Required for O(1) swap-and-pop on burn/transfer.
+    OwnerTokenPosition(TokenId),
 }
 
 /// Emergency withdrawal request
@@ -965,6 +982,10 @@ impl ClipsNftContract {
         let balance: u32 = env.storage().persistent().get(&DataKey::Balance(to.clone())).unwrap_or(0);
         env.storage().persistent().set(&DataKey::Balance(to.clone()), &(balance + 1));
 
+        // Maintain O(1) enumeration indexes (must come after supply/balance increments).
+        Self::index_add_global(&env, token_id);
+        Self::index_add_owner(&env, &to, token_id);
+
         env.events().publish(
             (symbol_short!("mint"),),
             MintEvent { to: to.clone(), clip_id, token_id, metadata_uri },
@@ -1138,6 +1159,10 @@ impl ClipsNftContract {
         let to_balance: u32 = env.storage().persistent().get(&DataKey::Balance(to.clone())).unwrap_or(0);
         env.storage().persistent().set(&DataKey::Balance(to.clone()), &(to_balance + 1));
 
+        // Update O(1) owner enumeration indexes (after balance changes).
+        Self::index_remove_owner(&env, &from, token_id);
+        Self::index_add_owner(&env, &to, token_id);
+
         env.events().publish(
             (symbol_short!("transfer"),),
             TransferEvent { token_id, from, to },
@@ -1219,6 +1244,10 @@ impl ClipsNftContract {
         
         let to_balance: u32 = env.storage().persistent().get(&DataKey::Balance(to.clone())).unwrap_or(0);
         env.storage().persistent().set(&DataKey::Balance(to.clone()), &(to_balance + 1));
+
+        // Update O(1) owner enumeration indexes (after balance changes).
+        Self::index_remove_owner(&env, &from, token_id);
+        Self::index_add_owner(&env, &to, token_id);
 
         env.events().publish(
             (symbol_short!("transfer"),),
@@ -1795,68 +1824,48 @@ impl ClipsNftContract {
             .unwrap_or(0)
     }
 
-    /// Returns the token ID at the given global index.
-    /// Index 0 corresponds to the first existing token.
-    /// Returns `InvalidTokenId` if the index is out of bounds.
+    /// Returns the token ID at the given global index (0-based).
+    ///
+    /// O(1) — reads directly from the `TokenIndex` persistent map maintained
+    /// by mint and burn. No iteration over burned slots.
+    ///
+    /// # Errors
+    /// * [`Error::InvalidTokenId`] — `index` ≥ `total_supply`.
     pub fn token_by_index(env: Env, index: u32) -> Result<TokenId, Error> {
-        let next_id: u32 = env
-            .storage()
-            .instance()
-            .get(&DataKey::NextTokenId)
-            .unwrap_or(1);
-
-        let mut current_index: u32 = 0;
-        let mut token_id: u32 = 1;
-        while token_id < next_id {
-            if env.storage().persistent().has(&DataKey::Token(token_id)) {
-                if current_index == index {
-                    return Ok(token_id);
-                }
-                current_index += 1;
-            }
-            token_id += 1;
+        let supply: u32 = env.storage().instance().get(&DataKey::TotalSupply).unwrap_or(0);
+        if index >= supply {
+            return Err(Error::InvalidTokenId);
         }
-        Err(Error::InvalidTokenId)
+        env.storage()
+            .persistent()
+            .get(&DataKey::TokenIndex(index))
+            .ok_or(Error::InvalidTokenId)
     }
 
     /// Returns the N-th token owned by `owner` (0-indexed).
     ///
-    /// Iterates over all minted tokens and returns the one at position `index`
-    /// among those owned by `owner`. Essential for Enumerable NFT standards.
+    /// O(1) — reads directly from the `OwnerTokenIndex` persistent map
+    /// maintained by mint, burn, and transfer. No iteration required.
     ///
     /// # Arguments
     /// * `owner` — Address to query.
     /// * `index` — 0-based position among the owner's tokens.
     ///
     /// # Errors
-    /// * [`Error::InvalidTokenId`] — index is out of bounds for this owner.
-    ///
-    /// Closes #171
+    /// * [`Error::InvalidTokenId`] — `index` ≥ `balance_of(owner)`.
     pub fn token_of_owner_by_index(env: Env, owner: Address, index: u32) -> Result<TokenId, Error> {
-        let next_id: u32 = env
+        let balance: u32 = env
             .storage()
-            .instance()
-            .get(&DataKey::NextTokenId)
-            .unwrap_or(1);
-
-        let mut count: u32 = 0;
-        let mut token_id: u32 = 1;
-        while token_id < next_id {
-            if let Some(data) = env
-                .storage()
-                .persistent()
-                .get::<DataKey, TokenData>(&DataKey::Token(token_id))
-            {
-                if data.owner == owner {
-                    if count == index {
-                        return Ok(token_id);
-                    }
-                    count += 1;
-                }
-            }
-            token_id += 1;
+            .persistent()
+            .get(&DataKey::Balance(owner.clone()))
+            .unwrap_or(0);
+        if index >= balance {
+            return Err(Error::InvalidTokenId);
         }
-        Err(Error::InvalidTokenId)
+        env.storage()
+            .persistent()
+            .get(&DataKey::OwnerTokenIndex(owner, index))
+            .ok_or(Error::InvalidTokenId)
     }
 
     /// Returns the earliest ledger timestamp at which `token_id` is eligible
@@ -2177,6 +2186,10 @@ impl ClipsNftContract {
         let balance: u32 = env.storage().persistent().get(&DataKey::Balance(owner.clone())).unwrap_or(0);
         env.storage().persistent().set(&DataKey::Balance(owner.clone()), &balance.saturating_sub(1));
 
+        // Remove from O(1) enumeration indexes (must come after supply/balance decrements).
+        Self::index_remove_global(&env, token_id);
+        Self::index_remove_owner(&env, &owner, token_id);
+
         env.events().publish(
             (symbol_short!("burn"),),
             BurnEvent {
@@ -2292,83 +2305,56 @@ impl ClipsNftContract {
     /// Vec of token IDs owned by the address, capped at 1000 entries
     pub fn tokens_of_owner(env: Env, owner: Address) -> Vec<TokenId> {
         const MAX_RESULTS: u32 = 1000;
-        let next_id: u32 = env
+        let balance: u32 = env
             .storage()
-            .instance()
-            .get(&DataKey::NextTokenId)
-            .unwrap_or(1);
+            .persistent()
+            .get(&DataKey::Balance(owner.clone()))
+            .unwrap_or(0);
 
+        let count = if balance > MAX_RESULTS { MAX_RESULTS } else { balance };
         let mut result: Vec<TokenId> = Vec::new(&env);
-        let mut count: u32 = 0;
-
-        let mut token_id: u32 = 1;
-        while token_id < next_id && count < MAX_RESULTS {
-            if let Some(data) = env
+        for pos in 0..count {
+            if let Some(token_id) = env
                 .storage()
                 .persistent()
-                .get::<DataKey, TokenData>(&DataKey::Token(token_id))
+                .get::<DataKey, TokenId>(&DataKey::OwnerTokenIndex(owner.clone(), pos))
             {
-                if data.owner == owner {
-                    result.push_back(token_id);
-                    count += 1;
-                }
+                result.push_back(token_id);
             }
-            token_id += 1;
         }
-
         result
     }
 
     /// Return a paginated list of token IDs owned by `owner`.
     ///
-    /// Supports offset-based pagination: `offset` is the number of matching
-    /// tokens to skip, `limit` is the max to return (capped at 100).
-    ///
-    /// ## Usage
-    /// ```text
-    /// // Page 1: first 10 tokens
-    /// get_user_tokens(owner, 10, 0)
-    /// // Page 2: next 10 tokens
-    /// get_user_tokens(owner, 10, 10)
-    /// ```
+    /// O(limit) — reads directly from the per-owner index, no scan over
+    /// burned or unrelated tokens.
     ///
     /// # Arguments
     /// * `owner`  — Address to query.
     /// * `limit`  — Max tokens to return (capped at 100).
-    /// * `offset` — Number of matching tokens to skip before collecting.
+    /// * `offset` — Number of tokens to skip (0-based page offset).
     pub fn get_user_tokens(env: Env, owner: Address, limit: u32, offset: u32) -> Vec<TokenId> {
         const MAX_LIMIT: u32 = 100;
         let limit = if limit > MAX_LIMIT { MAX_LIMIT } else { limit };
 
-        let next_id: u32 = env
+        let balance: u32 = env
             .storage()
-            .instance()
-            .get(&DataKey::NextTokenId)
-            .unwrap_or(1);
+            .persistent()
+            .get(&DataKey::Balance(owner.clone()))
+            .unwrap_or(0);
 
         let mut result: Vec<TokenId> = Vec::new(&env);
-        let mut skipped: u32 = 0;
-        let mut collected: u32 = 0;
-        let mut token_id: u32 = 1;
-
-        while token_id < next_id && collected < limit {
-            if let Some(data) = env
+        let end = offset.saturating_add(limit).min(balance);
+        for pos in offset..end {
+            if let Some(token_id) = env
                 .storage()
                 .persistent()
-                .get::<DataKey, TokenData>(&DataKey::Token(token_id))
+                .get::<DataKey, TokenId>(&DataKey::OwnerTokenIndex(owner.clone(), pos))
             {
-                if data.owner == owner {
-                    if skipped < offset {
-                        skipped += 1;
-                    } else {
-                        result.push_back(token_id);
-                        collected += 1;
-                    }
-                }
+                result.push_back(token_id);
             }
-            token_id += 1;
         }
-
         result
     }
 
@@ -2651,6 +2637,124 @@ impl ClipsNftContract {
         env.crypto().ed25519_verify(&signer, &Bytes::from(message), signature);
 
         Ok(())
+    }
+
+    // -------------------------------------------------------------------------
+    // Enumeration index helpers (O(1) swap-and-pop)
+    // -------------------------------------------------------------------------
+
+    /// Append `token_id` to the global active-token index.
+    ///
+    /// Called on every mint. Uses `TotalSupply` (already incremented) as the
+    /// new position so no extra counter is needed.
+    fn index_add_global(env: &Env, token_id: TokenId) {
+        // Position = current supply - 1 (supply was already incremented by mint).
+        let supply: u32 = env.storage().instance().get(&DataKey::TotalSupply).unwrap_or(1);
+        let pos = supply.saturating_sub(1);
+        env.storage().persistent().set(&DataKey::TokenIndex(pos), &token_id);
+        env.storage().persistent().set(&DataKey::TokenPosition(token_id), &pos);
+        Self::bump_persistent_ttl(env, &DataKey::TokenIndex(pos));
+        Self::bump_persistent_ttl(env, &DataKey::TokenPosition(token_id));
+    }
+
+    /// Remove `token_id` from the global active-token index using swap-and-pop.
+    ///
+    /// Swaps the target slot with the last slot, then removes the last slot.
+    /// O(1) — no iteration required.
+    fn index_remove_global(env: &Env, token_id: TokenId) {
+        let pos: u32 = match env.storage().persistent().get(&DataKey::TokenPosition(token_id)) {
+            Some(p) => p,
+            None => return, // not indexed (pre-index token) — safe no-op
+        };
+
+        let supply: u32 = env.storage().instance().get(&DataKey::TotalSupply).unwrap_or(0);
+        // supply was already decremented by burn before this call, so last valid
+        // position is `supply` (0-indexed list had `supply+1` elements before burn).
+        let last_pos = supply; // == old_supply - 1
+
+        if pos != last_pos {
+            // Move the token that was at last_pos into pos.
+            let last_token: TokenId = env
+                .storage()
+                .persistent()
+                .get(&DataKey::TokenIndex(last_pos))
+                .unwrap_or(token_id);
+            env.storage().persistent().set(&DataKey::TokenIndex(pos), &last_token);
+            env.storage().persistent().set(&DataKey::TokenPosition(last_token), &pos);
+            Self::bump_persistent_ttl(env, &DataKey::TokenIndex(pos));
+            Self::bump_persistent_ttl(env, &DataKey::TokenPosition(last_token));
+        }
+
+        // Remove the now-vacated last slot and the burned token's position entry.
+        env.storage().persistent().remove(&DataKey::TokenIndex(last_pos));
+        env.storage().persistent().remove(&DataKey::TokenPosition(token_id));
+    }
+
+    /// Append `token_id` to `owner`'s per-owner active-token index.
+    ///
+    /// Called on mint and on the receiving side of a transfer.
+    fn index_add_owner(env: &Env, owner: &Address, token_id: TokenId) {
+        // New position = current balance - 1 (balance already incremented).
+        let bal: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Balance(owner.clone()))
+            .unwrap_or(1);
+        let pos = bal.saturating_sub(1);
+        env.storage()
+            .persistent()
+            .set(&DataKey::OwnerTokenIndex(owner.clone(), pos), &token_id);
+        env.storage()
+            .persistent()
+            .set(&DataKey::OwnerTokenPosition(token_id), &pos);
+        Self::bump_persistent_ttl(env, &DataKey::OwnerTokenIndex(owner.clone(), pos));
+        Self::bump_persistent_ttl(env, &DataKey::OwnerTokenPosition(token_id));
+    }
+
+    /// Remove `token_id` from `owner`'s per-owner active-token index using swap-and-pop.
+    ///
+    /// Called on burn and on the sending side of a transfer.
+    /// O(1) — no iteration required.
+    fn index_remove_owner(env: &Env, owner: &Address, token_id: TokenId) {
+        let pos: u32 = match env
+            .storage()
+            .persistent()
+            .get(&DataKey::OwnerTokenPosition(token_id))
+        {
+            Some(p) => p,
+            None => return, // not indexed — safe no-op
+        };
+
+        // Balance was already decremented before this call.
+        let bal: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Balance(owner.clone()))
+            .unwrap_or(0);
+        let last_pos = bal; // == old_balance - 1
+
+        if pos != last_pos {
+            let last_token: TokenId = env
+                .storage()
+                .persistent()
+                .get(&DataKey::OwnerTokenIndex(owner.clone(), last_pos))
+                .unwrap_or(token_id);
+            env.storage()
+                .persistent()
+                .set(&DataKey::OwnerTokenIndex(owner.clone(), pos), &last_token);
+            env.storage()
+                .persistent()
+                .set(&DataKey::OwnerTokenPosition(last_token), &pos);
+            Self::bump_persistent_ttl(env, &DataKey::OwnerTokenIndex(owner.clone(), pos));
+            Self::bump_persistent_ttl(env, &DataKey::OwnerTokenPosition(last_token));
+        }
+
+        env.storage()
+            .persistent()
+            .remove(&DataKey::OwnerTokenIndex(owner.clone(), last_pos));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::OwnerTokenPosition(token_id));
     }
 
     /// Assert that `addr` is the stored admin and require its authorization.
@@ -4027,14 +4131,23 @@ mod tests {
         let kp = register_signer(&env, &client, &admin);
 
         let t1 = do_mint(&client, &env, &user1, 810, &kp);
-        let _t2 = do_mint(&client, &env, &user1, 811, &kp);
+        let t2 = do_mint(&client, &env, &user1, 811, &kp);
         let t3 = do_mint(&client, &env, &user1, 812, &kp);
 
+        // Before any burn: index maps directly to minted order.
         assert_eq!(client.token_by_index(&0), t1);
+        assert_eq!(client.token_by_index(&1), t2);
         assert_eq!(client.token_by_index(&2), t3);
 
+        // Burn t1 (position 0). Swap-and-pop moves t3 into slot 0.
         client.burn(&user1, &t1);
-        assert_eq!(client.token_by_index(&0), 2);
+        assert_eq!(client.total_supply(), 2);
+        // Slot 0 now holds t3 (swapped from last position).
+        assert_eq!(client.token_by_index(&0), t3);
+        // Slot 1 still holds t2.
+        assert_eq!(client.token_by_index(&1), t2);
+        // Index 2 is now out of bounds.
+        assert_eq!(client.try_token_by_index(&2), Err(Ok(Error::InvalidTokenId)));
     }
 
     #[test]
