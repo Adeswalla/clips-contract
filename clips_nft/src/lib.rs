@@ -145,6 +145,8 @@ pub enum Error {
     Reentrancy = 24,
     /// Circuit breaker triggered due to anomalous mint activity.
     CircuitBreakerTripped = 25,
+    /// Metadata has already been updated once and cannot be changed again.
+    MetadataAlreadyUpdated = 26,
 }
 
 // =============================================================================
@@ -947,57 +949,23 @@ impl ClipsNftContract {
             .persistent()
             .get(&DataKey::Token(token_id))
             .ok_or(Error::InvalidTokenId)?;
-    /// Mint a new NFT for a video clip.
-    ///
-    /// Requires a valid Ed25519 `signature` from the registered backend signer
-    /// over the canonical mint payload:
-    ///
-    /// ```text
-    /// payload = SHA-256(
-    ///     clip_id_le_4_bytes
-    ///     || SHA-256(XDR(owner))        // 32 bytes
-    ///     || SHA-256(UTF-8(metadata_uri)) // 32 bytes
-    /// )
-    /// ```
-    ///
-    /// Storage writes: 2 persistent (TokenData, ClipIdMinted), 1 instance (NextTokenId).
-    ///
-    /// Emits: `"mint"` [`MintEvent`].
-    ///
-    /// # Arguments
-    /// * `to`           — Address that will own the NFT (must match the signed payload).
-    /// * `clip_id`      — Unique off-chain clip identifier (must match the signed payload).
-    /// * `metadata_uri` — IPFS or Arweave URI (must match the signed payload).
-    /// * `royalty`      — Royalty configuration for secondary sales.
-    /// * `is_soulbound` — When `true` the token cannot be transferred.
-    /// * `signature`    — 64-byte Ed25519 signature from the registered backend signer.
-    ///
-    /// # Errors
-    /// * [`Error::ContractPaused`] — contract is paused.
-    /// * [`Error::SignerNotSet`]   — no signer registered.
-    /// * [`Error::InvalidSignature`] — signature verification failed.
-    /// * [`Error::ClipAlreadyMinted`] — clip already has a token.
-    /// * [`Error::ClipBlacklisted`] — clip ID is blacklisted.
-    /// * [`Error::RoyaltyTooHigh`] — total basis points exceed 10 000.
-    /// Mint a new NFT token.
-    ///
-    /// # Arguments
-    /// * `to` — Recipient address (must authorize the call).
-    /// * `clip_id` — Off-chain clip identifier.
-    /// * `metadata_uri` — Metadata URI (IPFS or Arweave).
-    /// * `image` — Static thumbnail URL (optional). Must start with "https://" or "ipfs://".
-    ///   Recommended formats: PNG, JPEG, GIF (static), SVG. Max 100 MB.
-    /// * `animation_url` — Animated preview URL (optional). Must start with "https://" or "ipfs://".
-    ///   Recommended formats: GIF, MP4 (H.264), WEBM, GLB/GLTF (for 3D), HTML (for interactive). Max 100 MB.
-    ///   Takes precedence for playback; `image` is used as the fallback thumbnail.
-    /// * `royalty` — Royalty configuration for secondary sales.
-    /// * `is_soulbound` — When `true`, the token cannot be transferred.
-    /// * `signature` — Backend Ed25519 signature over the mint payload.
-    ///
-    /// # Errors
-    /// * [`Error::ContractPaused`] — contract is paused.
-    /// * [`Error::ClipAlreadyMinted`] — this clip_id has already been minted.
-    /// * [`Error::ClipBlacklisted`] — this clip_id has been blacklisted.
+
+        token_data.owner.require_auth();
+
+        let approval_key = DataKey::Approved(token_id);
+        if env.storage().persistent().has(&approval_key) {
+            env.storage().persistent().remove(&approval_key);
+            env.events().publish(
+                (symbol_short!("approval"),),
+                ApprovalEvent {
+                    owner: token_data.owner,
+                    operator: env.current_contract_address(),
+                    token_id,
+                },
+            );
+        }
+        Ok(())
+    }
     /// * [`Error::InvalidSignature`] — backend signature is invalid.
     /// * [`Error::SignerNotSet`] — no backend signer has been registered.
     /// * [`Error::InvalidImageUrl`] — image URL does not start with "https://" or "ipfs://".
@@ -1141,20 +1109,28 @@ impl ClipsNftContract {
 
         let owner = Self::owner_of(env.clone(), token_id)?;
 
-        token_data.owner.require_auth();
+        // Caller must be the owner or an approved-for-all operator.
+        let is_approved_for_all = env
+            .storage()
+            .persistent()
+            .get::<DataKey, bool>(&DataKey::ApprovalForAll(owner.clone(), caller.clone()))
+            .unwrap_or(false);
+        if caller != owner && !is_approved_for_all {
+            return Err(Error::NotAuthorizedToApprove);
+        }
 
         let approval_key = DataKey::Approved(token_id);
-        if env.storage().persistent().has(&approval_key) {
-            env.storage().persistent().remove(&approval_key);
-            
-            env.events().publish(
-                (symbol_short!("approval"),),
-                ApprovalEvent {
-                    owner: token_data.owner,
-                    operator: env.current_contract_address(),
-                    token_id,
-                },
-            );
+        match operator {
+            Some(ref op) => {
+                env.storage().persistent().set(&approval_key, op);
+                env.events().publish(
+                    (symbol_short!("approval"),),
+                    ApprovalEvent { owner, operator: op.clone(), token_id },
+                );
+            }
+            None => {
+                env.storage().persistent().remove(&approval_key);
+            }
         }
         Ok(())
     }
@@ -1183,17 +1159,9 @@ impl ClipsNftContract {
     // Core NFT operations
     // -------------------------------------------------------------------------
 
-    /// Destroys an NFT and optionally claims outstanding accrued royalties back to the creator.
+    /// Transfer NFT ownership from `from` to `to`.
     ///
-    /// Closes #136
-    pub fn burn(env: Env, token_id: TokenId, refund_royalty: bool) -> Result<(), Error> {
-        let token_key = DataKey::Token(token_id);
-        let token_data: TokenData = env
-    /// # Errors
-    /// * [`Error::ContractPaused`]          — contract is paused.
-    /// * [`Error::InvalidTokenId`]          — token does not exist.
-    /// * [`Error::Unauthorized`]            — `from` is not the owner.
-    /// * [`Error::SoulboundTransferBlocked`] — token is soulbound.
+    /// Blocked if the token is soulbound or frozen.
     pub fn transfer(
         env: Env,
         from: Address,
@@ -1209,13 +1177,13 @@ impl ClipsNftContract {
             return Err(Error::TokenFrozen);
         }
 
+        let token_key = DataKey::Token(token_id);
         let mut data: TokenData = env
             .storage()
             .persistent()
             .get(&token_key)
             .ok_or(Error::InvalidTokenId)?;
 
-        token_data.owner.require_auth();
         if from != data.owner {
             return Err(Error::Unauthorized);
         }
@@ -1224,7 +1192,7 @@ impl ClipsNftContract {
             return Err(Error::SoulboundTransferBlocked);
         }
 
-        // Handle royalty payment if sale_price is greater than zero
+        // Handle royalty payment if sale_price is greater than zero.
         if sale_price > 0 {
             let royalty = data.royalty.clone();
             let pay_asset = match royalty.asset_address {
@@ -1232,75 +1200,49 @@ impl ClipsNftContract {
                 None => payment_asset.clone().ok_or(Error::InvalidRecipient)?,
             };
 
-            // Buyer (to) must authorize the royalty payment
             to.require_auth();
-
             Self::acquire_reentrancy_lock(&env)?;
 
-            // Calculate total royalty
             let mut cumulative_bps: u32 = 0;
             let mut cumulative_royalty: i128 = 0;
             for idx in 0..royalty.recipients.len() {
                 let split = royalty.recipients.get(idx).ok_or(Error::InvalidRoyaltySplit)?;
                 cumulative_bps = cumulative_bps.saturating_add(split.basis_points);
-                let total_so_far = Self::calculate_royalty(sale_price, cumulative_bps)?;
-                cumulative_royalty = total_so_far;
+                cumulative_royalty = Self::calculate_royalty(sale_price, cumulative_bps)?;
             }
 
-            // Effects: update royalty balance
             if cumulative_royalty > 0 {
-                let prev: i128 = env
-                    .storage()
-                    .persistent()
-                    .get(&DataKey::RoyaltyBalance(token_id))
-                    .unwrap_or(0);
-                env.storage()
-                    .persistent()
-                    .set(&DataKey::RoyaltyBalance(token_id), &(prev.saturating_add(cumulative_royalty)));
+                let prev: i128 = env.storage().persistent().get(&DataKey::RoyaltyBalance(token_id)).unwrap_or(0);
+                env.storage().persistent().set(&DataKey::RoyaltyBalance(token_id), &(prev.saturating_add(cumulative_royalty)));
             }
 
-            // Interactions: perform transfers
             let token_client = soroban_sdk::token::TokenClient::new(&env, &pay_asset);
             let mut current_bps: u32 = 0;
             let mut current_royalty: i128 = 0;
-
             for idx in 0..royalty.recipients.len() {
                 let split = royalty.recipients.get(idx).ok_or(Error::InvalidRoyaltySplit)?;
-
                 current_bps = current_bps.saturating_add(split.basis_points);
                 let total_so_far = Self::calculate_royalty(sale_price, current_bps)?;
                 let amount = total_so_far.saturating_sub(current_royalty);
                 current_royalty = total_so_far;
-
-                if amount == 0 {
-                    continue;
-                }
-
+                if amount == 0 { continue; }
                 token_client.transfer(&to, &split.recipient, &amount);
                 env.events().publish(
                     (symbol_short!("royalty"),),
-                    RoyaltyPaidEvent {
-                        token_id,
-                        from: to.clone(),
-                        to: split.recipient.clone(),
-                        amount,
-                    },
+                    RoyaltyPaidEvent { token_id, from: to.clone(), to: split.recipient.clone(), amount },
                 );
             }
 
             Self::release_reentrancy_lock(&env);
         }
 
-        // Clear per-token approval on transfer.
         env.storage().persistent().remove(&DataKey::Approved(token_id));
 
         data.owner = to.clone();
-        env.storage().persistent().set(&DataKey::Token(token_id), &data);
+        env.storage().persistent().set(&token_key, &data);
 
-        // Update balances
         let from_balance: u32 = env.storage().persistent().get(&DataKey::Balance(from.clone())).unwrap_or(0);
         env.storage().persistent().set(&DataKey::Balance(from.clone()), &from_balance.saturating_sub(1));
-        
         let to_balance: u32 = env.storage().persistent().get(&DataKey::Balance(to.clone())).unwrap_or(0);
         env.storage().persistent().set(&DataKey::Balance(to.clone()), &(to_balance + 1));
 
@@ -1309,7 +1251,6 @@ impl ClipsNftContract {
             TransferEvent { token_id, from, to },
         );
 
-        // Gas tracking — Closes #169
         let count_transfer: u64 = env.storage().instance().get(&DataKey::CountTransfer).unwrap_or(0);
         env.storage().instance().set(&DataKey::CountTransfer, &(count_transfer + 1));
         let total_gas_transfer: u64 = env.storage().instance().get(&DataKey::TotalGasTransfer).unwrap_or(0);
@@ -1319,24 +1260,6 @@ impl ClipsNftContract {
     }
 
     /// Transfer NFT ownership on behalf of `from` by an approved `spender`.
-    ///
-    /// `spender` must be either approved-for-all or the per-token approved operator.
-    /// Blocked when the contract is paused or the token is soulbound.
-    /// Clears any existing per-token approval on success.
-    ///
-    /// Emits: `"transfer"` [`TransferEvent`].
-    ///
-    /// # Arguments
-    /// * `spender`  — Approved operator (must authorize).
-    /// * `from`     — Current owner.
-    /// * `to`       — New owner.
-    /// * `token_id` — Token to transfer.
-    ///
-    /// # Errors
-    /// * [`Error::ContractPaused`]          — contract is paused.
-    /// * [`Error::InvalidTokenId`]          — token does not exist.
-    /// * [`Error::Unauthorized`]            — `from` is not the owner or `spender` is not approved.
-    /// * [`Error::SoulboundTransferBlocked`] — token is soulbound.
     pub fn transfer_from(
         env: Env,
         spender: Address,
@@ -1351,206 +1274,57 @@ impl ClipsNftContract {
             return Err(Error::TokenFrozen);
         }
 
-        // Handle optional royalty recovery tracking back to the primary creator asset configuration rules
-        if refund_royalty {
-            let royalty_key = DataKey::RoyaltyBalance(token_id);
-            if env.storage().persistent().has(&royalty_key) {
-                let accumulated_amount: i128 = env.storage().persistent().get(&royalty_key).unwrap_or(0);
-                
-                if accumulated_amount > 0 {
-                    // Extract original primary creator/receiver info if existing
-                    if let Some(first_recipient) = token_data.royalty.recipients.get(0) {
-                        let target_creator = first_recipient.recipient;
-                        
-                        // Transfer out using specified contract token type structure defaults
-                        if let Some(ref asset_addr) = token_data.royalty.asset_address {
-                            let client = soroban_sdk::token::TokenClient::new(&env, asset_addr);
-                            client.transfer(&env.current_contract_address(), &target_creator, &accumulated_amount);
-                        }
-                        
-                        env.events().publish(
-                            (symbol_short!("refunded"),),
-                            RefundedEvent {
-                                token_id,
-                                recipient: target_creator,
-                                amount: accumulated_amount,
-                            },
-                        );
-                    }
-                }
-                env.storage().persistent().remove(&royalty_key);
-            }
+        let token_key = DataKey::Token(token_id);
+        let mut data: TokenData = env
+            .storage()
+            .persistent()
+            .get(&token_key)
+            .ok_or(Error::InvalidTokenId)?;
+
+        if from != data.owner {
+            return Err(Error::Unauthorized);
         }
 
-        // Clean up remaining storage keys mapped to this token context
-        env.storage().persistent().remove(&token_key);
-        env.storage().persistent().remove(&DataKey::ClipIdMinted(token_data.clip_id));
+        // Spender must be approved for this token or approved-for-all.
+        let is_approved = env
+            .storage()
+            .persistent()
+            .get::<DataKey, Address>(&DataKey::Approved(token_id))
+            .map(|op| op == spender)
+            .unwrap_or(false);
+        let is_approved_for_all = env
+            .storage()
+            .persistent()
+            .get::<DataKey, bool>(&DataKey::ApprovalForAll(from.clone(), spender.clone()))
+            .unwrap_or(false);
+        if !is_approved && !is_approved_for_all {
+            return Err(Error::Unauthorized);
+        }
+
+        if data.is_soulbound {
+            return Err(Error::SoulboundTransferBlocked);
+        }
+
         env.storage().persistent().remove(&DataKey::Approved(token_id));
-        env.storage().persistent().remove(&DataKey::CustomTokenUri(token_id));
-        env.storage().persistent().remove(&DataKey::MetadataUpdateCount(token_id));
-        env.storage().persistent().remove(&DataKey::MetadataRefreshTime(token_id));
+
+        data.owner = to.clone();
+        env.storage().persistent().set(&token_key, &data);
+
+        let from_balance: u32 = env.storage().persistent().get(&DataKey::Balance(from.clone())).unwrap_or(0);
+        env.storage().persistent().set(&DataKey::Balance(from.clone()), &from_balance.saturating_sub(1));
+        let to_balance: u32 = env.storage().persistent().get(&DataKey::Balance(to.clone())).unwrap_or(0);
+        env.storage().persistent().set(&DataKey::Balance(to.clone()), &(to_balance + 1));
 
         env.events().publish(
-            (symbol_short!("burn"),),
-            BurnEvent {
-                owner: token_data.owner,
-                token_id,
-                clip_id: token_data.clip_id,
-            },
+            (symbol_short!("transfer"),),
+            TransferEvent { token_id, from, to },
         );
 
         Ok(())
     }
 
-    /// Internal checker helper functions mapped by your setup layers
-    fn require_admin(env: &Env, admin: &Address) -> Result<(), Error> {
-        let stored_admin: Address = env.storage().instance().get(&DataKey::Admin).ok_or(Error::Unauthorized)?;
-        if admin != &stored_admin {
-            return Err(Error::Unauthorized);
-        }
-        admin.require_auth();
-        Ok(())
-    }
-
-    fn check_paused(env: &Env) -> bool {
-        env.storage().instance().get(&DataKey::Paused).unwrap_or(false)
-    }
-
-    fn exists(env: Env, token_id: TokenId) -> bool {
-        env.storage().persistent().has(&DataKey::Token(token_id))
-    }
-
-    fn acquire_reentrancy_lock(env: &Env) -> Result<(), Error> {
-        if env.storage().instance().has(&DataKey::ReentrancyLock) {
-            return Err(Error::Reentrancy);
-    /// Set circuit breaker enabled status.
-    ///
-    /// ⚠️ **Access Control: Admin only.**
-    ///
-    /// When enabled, the circuit breaker will automatically pause the contract
-    /// if mint operations exceed the configured threshold within the time window.
-    ///
-    /// # Arguments
-    /// * `admin`   — Must be the contract admin.
-    /// * `enabled` — Whether to enable the circuit breaker.
-    pub fn set_circuit_breaker_enabled(env: Env, admin: Address, enabled: bool) -> Result<(), Error> {
-        Self::require_admin(&env, &admin)?;
-        env.storage().instance().set(&DataKey::CircuitBreakerEnabled, &enabled);
-        Ok(())
-    }
-
-    /// Set circuit breaker threshold (max mints allowed in time window).
-    ///
-    /// ⚠️ **Access Control: Admin only.**
-    ///
-    /// # Arguments
-    /// * `admin`     — Must be the contract admin.
-    /// * `threshold` — Maximum number of mints allowed in the time window.
-    pub fn set_circuit_breaker_threshold(env: Env, admin: Address, threshold: u64) -> Result<(), Error> {
-        Self::require_admin(&env, &admin)?;
-        env.storage().instance().set(&DataKey::CircuitBreakerThreshold, &threshold);
-        Ok(())
-    }
-
-    /// Set circuit breaker time window duration in seconds.
-    ///
-    /// ⚠️ **Access Control: Admin only.**
-    ///
-    /// # Arguments
-    /// * `admin`          — Must be the contract admin.
-    /// * `window_seconds` — Duration of the time window in seconds.
-    pub fn set_circuit_breaker_window(env: Env, admin: Address, window_seconds: u64) -> Result<(), Error> {
-        Self::require_admin(&env, &admin)?;
-        env.storage().instance().set(&DataKey::CircuitBreakerWindowSeconds, &window_seconds);
-        Ok(())
-    }
-
-    /// Reset circuit breaker window and counter.
-    ///
-    /// ⚠️ **Access Control: Admin only.**
-    ///
-    /// Useful for resetting the circuit breaker after a false alarm or
-    /// after the contract has been unpaused.
-    ///
-    /// # Arguments
-    /// * `admin` — Must be the contract admin.
-    pub fn reset_circuit_breaker(env: Env, admin: Address) -> Result<(), Error> {
-        Self::require_admin(&env, &admin)?;
-        env.storage().instance().set(&DataKey::CircuitBreakerWindowStart, &0u64);
-        env.storage().instance().set(&DataKey::CircuitBreakerWindowCount, &0u64);
-        Ok(())
-    }
-
-    /// Update metadata URI for a token. Only the token owner can update it.
-    /// Limited to once per NFT to prevent abuse.
-    ///
-    /// # Arguments
-    /// * `owner`    - Must be the current token owner
-    /// * `token_id` - Token to update
-    /// * `new_uri`  - New metadata URI
-    pub fn update_metadata(
-        env: Env,
-        owner: Address,
-        token_id: TokenId,
-        new_uri: String,
-    ) -> Result<(), Error> {
-        owner.require_auth();
-        let data = Self::load_token(&env, token_id)?;
-        if data.owner != owner {
-            return Err(Error::Unauthorized);
-        }
-
-        // Check if metadata has already been updated
-        let update_count: u32 = env
-            .storage()
-            .persistent()
-            .get(&DataKey::MetadataUpdateCount(token_id))
-            .unwrap_or(0);
-
-        if update_count >= 1 {
-            return Err(Error::Unauthorized); // Already updated once
-        }
-        env.storage().instance().set(&DataKey::ReentrancyLock, &true);
-        Ok(())
-    }
-
-    fn release_reentrancy_lock(env: &Env) {
-        env.storage().instance().remove(&DataKey::ReentrancyLock);
-    }
-
     /// Push updated metadata from the backend (e.g. after virality score changes).
-    ///
-    /// Callable by the contract admin **or** the registered backend signer address.
-    /// Limited to once per 30 days per token to prevent abuse.
-    ///
-    /// Emits: `"meta_upd"` [`MetadataUpdatedEvent`].
-    ///
-    /// # Arguments
-    /// * `caller`   — Must be the admin or the registered signer address.
-    /// * `token_id` — Token whose metadata URI is being refreshed.
-    /// * `new_uri`  — New metadata URI.
-    ///
-    /// # Errors
-    /// * [`Error::Unauthorized`]           — caller is neither admin nor signer.
-    /// * [`Error::InvalidTokenId`]         — token does not exist.
-    /// * [`Error::MetadataRefreshTooSoon`] — 30-day cooldown has not elapsed.
-    /// Refresh token metadata (admin or signer only, 30-day cooldown).
-    ///
-    /// # Arguments
-    /// * `caller` — Must be the admin or registered signer.
-    /// * `token_id` — Token to update.
-    /// * `new_uri` — New metadata URI (optional). Pass `None` to leave unchanged.
-    /// * `image` — New static thumbnail URL (optional). Must start with "https://" or "ipfs://".
-    ///   Pass `None` to leave unchanged. Pass `Some("")` to clear the field.
-    /// * `animation_url` — New animated preview URL (optional). Must start with "https://" or "ipfs://".
-    ///   Pass `None` to leave unchanged. Pass `Some("")` to clear the field.
-    ///
-    /// # Errors
-    /// * [`Error::Unauthorized`] — caller is not admin or signer.
-    /// * [`Error::InvalidTokenId`] — token does not exist.
-    /// * [`Error::MetadataRefreshTooSoon`] — 30-day cooldown not elapsed.
-    /// * [`Error::InvalidImageUrl`] — image URL does not start with "https://" or "ipfs://".
-    /// * [`Error::InvalidAnimationUrl`] — animation_url does not start with "https://" or "ipfs://".
+    /// Admin only, 30-day cooldown per token.
     pub fn refresh_metadata(
         env: Env,
         caller: Address,
@@ -1740,6 +1514,69 @@ impl ClipsNftContract {
                 old_owner,
                 new_owner,
             },
+        );
+
+        Ok(())
+    }
+
+    // -------------------------------------------------------------------------
+    // Limited metadata update (owner-only, once per NFT)
+    // -------------------------------------------------------------------------
+
+    /// Update the metadata URI for a token. Only the current owner may call
+    /// this, and each token may only be updated **once** after minting.
+    ///
+    /// Emits: `"meta_upd"` [`MetadataUpdatedEvent`].
+    ///
+    /// # Arguments
+    /// * `owner`    — Must be the current token owner.
+    /// * `token_id` — Token to update.
+    /// * `new_uri`  — New metadata URI (must start with `https://` or `ipfs://`).
+    ///
+    /// # Errors
+    /// * [`Error::InvalidTokenId`]        — token does not exist.
+    /// * [`Error::Unauthorized`]          — caller is not the owner.
+    /// * [`Error::MetadataAlreadyUpdated`] — token has already been updated once.
+    /// * [`Error::InvalidImageUrl`]       — URI scheme is not `https://` or `ipfs://`.
+    pub fn update_metadata(
+        env: Env,
+        owner: Address,
+        token_id: TokenId,
+        new_uri: String,
+    ) -> Result<(), Error> {
+        owner.require_auth();
+
+        let mut data = Self::load_token(&env, token_id)?;
+
+        if owner != data.owner {
+            return Err(Error::Unauthorized);
+        }
+
+        // Enforce once-per-NFT limit.
+        let update_count: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::MetadataUpdateCount(token_id))
+            .unwrap_or(0);
+        if update_count >= 1 {
+            return Err(Error::MetadataAlreadyUpdated);
+        }
+
+        // Validate URI scheme.
+        Self::validate_url(&env, &Some(new_uri.clone()), Error::InvalidImageUrl)?;
+
+        let old_uri = data.metadata_uri.clone();
+        data.metadata_uri = new_uri.clone();
+        env.storage()
+            .persistent()
+            .set(&DataKey::Token(token_id), &data);
+        env.storage()
+            .persistent()
+            .set(&DataKey::MetadataUpdateCount(token_id), &(update_count + 1));
+
+        env.events().publish(
+            (symbol_short!("meta_upd"),),
+            MetadataUpdatedEvent { token_id, old_uri, new_uri },
         );
 
         Ok(())
@@ -3075,6 +2912,27 @@ impl ClipsNftContract {
         env.storage()
             .persistent()
             .extend_ttl(key, PERSISTENT_BUMP_THRESHOLD, PERSISTENT_BUMP_AMOUNT);
+    }
+
+    /// Returns `true` if the token exists.
+    fn exists(env: Env, token_id: TokenId) -> bool {
+        env.storage().persistent().has(&DataKey::Token(token_id))
+    }
+
+    /// Returns the platform fee in basis points (default 100 = 1%).
+    fn get_platform_fee(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::PlatformFeeBps)
+            .unwrap_or(100u32)
+    }
+
+    /// Returns the configured mint cooldown in seconds (default 0 = no cooldown).
+    fn get_mint_cooldown(env: Env) -> u64 {
+        env.storage()
+            .instance()
+            .get(&DataKey::MintCooldownSeconds)
+            .unwrap_or(DEFAULT_MINT_COOLDOWN_SECONDS)
     }
 
     /// Acquire the contract reentrancy lock before external token calls.
@@ -5041,4 +4899,93 @@ mod tests {
         assert_eq!(result, Err(Ok(Error::Unauthorized)));
     }
 
+    // -------------------------------------------------------------------------
+    // update_metadata tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_update_metadata_owner_can_update_once() {
+        let (env, admin, user1, _) = setup();
+        let contract_id = env.register(ClipsNftContract, ());
+        let client = ClipsNftContractClient::new(&env, &contract_id);
+        client.init(&admin);
+        let kp = register_signer(&env, &client, &admin);
+
+        let token_id = do_mint(&client, &env, &user1, 9000, &kp);
+        let new_uri = String::from_str(&env, "ipfs://QmUpdated");
+
+        client.update_metadata(&user1, &token_id, &new_uri);
+
+        assert_eq!(client.token_uri(&token_id), new_uri);
+    }
+
+    #[test]
+    fn test_update_metadata_second_update_fails() {
+        let (env, admin, user1, _) = setup();
+        let contract_id = env.register(ClipsNftContract, ());
+        let client = ClipsNftContractClient::new(&env, &contract_id);
+        client.init(&admin);
+        let kp = register_signer(&env, &client, &admin);
+
+        let token_id = do_mint(&client, &env, &user1, 9001, &kp);
+        client.update_metadata(&user1, &token_id, &String::from_str(&env, "ipfs://QmFirst"));
+
+        let result = client.try_update_metadata(
+            &user1,
+            &token_id,
+            &String::from_str(&env, "ipfs://QmSecond"),
+        );
+        assert_eq!(result, Err(Ok(Error::MetadataAlreadyUpdated)));
+    }
+
+    #[test]
+    fn test_update_metadata_non_owner_fails() {
+        let (env, admin, user1, user2) = setup();
+        let contract_id = env.register(ClipsNftContract, ());
+        let client = ClipsNftContractClient::new(&env, &contract_id);
+        client.init(&admin);
+        let kp = register_signer(&env, &client, &admin);
+
+        let token_id = do_mint(&client, &env, &user1, 9002, &kp);
+
+        let result = client.try_update_metadata(
+            &user2,
+            &token_id,
+            &String::from_str(&env, "ipfs://QmHack"),
+        );
+        assert_eq!(result, Err(Ok(Error::Unauthorized)));
+    }
+
+    #[test]
+    fn test_update_metadata_invalid_uri_fails() {
+        let (env, admin, user1, _) = setup();
+        let contract_id = env.register(ClipsNftContract, ());
+        let client = ClipsNftContractClient::new(&env, &contract_id);
+        client.init(&admin);
+        let kp = register_signer(&env, &client, &admin);
+
+        let token_id = do_mint(&client, &env, &user1, 9003, &kp);
+
+        let result = client.try_update_metadata(
+            &user1,
+            &token_id,
+            &String::from_str(&env, "ftp://bad-scheme"),
+        );
+        assert_eq!(result, Err(Ok(Error::InvalidImageUrl)));
+    }
+
+    #[test]
+    fn test_update_metadata_emits_event() {
+        let (env, admin, user1, _) = setup();
+        let contract_id = env.register(ClipsNftContract, ());
+        let client = ClipsNftContractClient::new(&env, &contract_id);
+        client.init(&admin);
+        let kp = register_signer(&env, &client, &admin);
+
+        let token_id = do_mint(&client, &env, &user1, 9004, &kp);
+        client.update_metadata(&user1, &token_id, &String::from_str(&env, "ipfs://QmEvt"));
+
+        let events = env.events().all();
+        assert!(events.events().len() > 0);
+    }
 }
