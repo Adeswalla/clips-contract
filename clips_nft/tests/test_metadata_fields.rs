@@ -117,8 +117,8 @@ fn test_mint_with_invalid_image_url_fails() {
         &false,
         &sig,
     );
-
-    assert_eq!(result, Err(Ok(Error::InvalidImageUrl)));
+    
+    assert_eq!(result, Err(Ok(Error::UnsupportedProtocol)));
 }
 
 #[test]
@@ -142,8 +142,8 @@ fn test_mint_with_invalid_animation_url_fails() {
         &false,
         &sig,
     );
-
-    assert_eq!(result, Err(Ok(Error::InvalidAnimationUrl)));
+    
+    assert_eq!(result, Err(Ok(Error::UnsupportedProtocol)));
 }
 
 #[test]
@@ -214,11 +214,15 @@ fn test_refresh_metadata_with_invalid_image_url_fails() {
     let token_id = mint_clip(&ctx, &owner, 9, false);
 
     let invalid_image = Some(String::from_str(ctx.env, "ftp://invalid.com/image.png"));
-    let result =
-        ctx.client
-            .try_refresh_metadata(&ctx.admin, &token_id, &None, &invalid_image, &None);
-
-    assert_eq!(result, Err(Ok(Error::InvalidImageUrl)));
+    let result = ctx.client.try_refresh_metadata(
+        &ctx.admin,
+        &token_id,
+        &None,
+        &invalid_image,
+        &None
+    );
+    
+    assert_eq!(result, Err(Ok(Error::UnsupportedProtocol)));
 }
 
 #[test]

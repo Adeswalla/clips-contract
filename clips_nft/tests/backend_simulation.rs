@@ -58,6 +58,32 @@ impl MockBackend {
         let sig = self.signer_secret.sign(&message.to_array());
         BytesN::from_array(env, &sig.to_bytes())
     }
+
+    /// Simulates the backend signing a mint payload with a nonce.
+    fn sign_mint_with_nonce(
+        &self,
+        env: &Env,
+        owner: &Address,
+        clip_id: u32,
+        metadata_uri: &String,
+        nonce: u64,
+    ) -> BytesN<64> {
+        let owner_hash: BytesN<32> = env.crypto().sha256(&owner.clone().to_xdr(env)).into();
+        let uri_hash: BytesN<32> = env.crypto().sha256(&Bytes::from(metadata_uri.to_xdr(env))).into();
+
+        let mut preimage = Bytes::new(env);
+        preimage.append(&Bytes::from_slice(env, b"mint_with_signature"));
+        preimage.extend_from_array(&clip_id.to_le_bytes());
+        preimage.append(&Bytes::from(owner_hash));
+        preimage.append(&Bytes::from(uri_hash));
+        preimage.extend_from_array(&nonce.to_le_bytes());
+
+        let message: BytesN<32> = env.crypto().sha256(&preimage).into();
+
+        use ed25519_dalek::Signer as _;
+        let sig = self.signer_secret.sign(&message.to_array());
+        BytesN::from_array(env, &sig.to_bytes())
+    }
 }
 
 fn setup_test(env: &Env) -> (ClipsNftContractClient<'_>, Address, MockBackend) {
@@ -113,6 +139,60 @@ fn test_mint_after_metadata_upload() {
     assert_eq!(client.owner_of(&token_id), user);
     assert_eq!(client.token_uri(&token_id), metadata_uri);
     assert_eq!(client.clip_token_id(&clip_id), 1);
+}
+
+#[test]
+fn test_mint_with_signature_nonce_prevents_replay() {
+    let env = Env::default();
+    let (client, _admin, backend) = setup_test(&env);
+    let user = Address::generate(&env);
+
+    let clip_id = 501;
+    let metadata_uri = backend.upload_metadata(&env, clip_id);
+
+    let mut recipients = Vec::new(&env);
+    recipients.push_back(RoyaltyRecipient {
+        recipient: user.clone(),
+        basis_points: 1000,
+    });
+    let royalty = Royalty {
+        recipients,
+        asset_address: None,
+    };
+
+    let nonce = 1;
+    let signature = backend.sign_mint_with_nonce(&env, &user, clip_id, &metadata_uri, nonce);
+    let token_id = client.mint_with_signature(
+        &user,
+        &clip_id,
+        &metadata_uri,
+        &None,
+        &None,
+        &royalty,
+        &false,
+        &nonce,
+        &signature,
+    );
+
+    assert_eq!(token_id, 1);
+    assert_eq!(client.owner_of(&token_id), user);
+
+    let clip_id2 = 502;
+    let metadata_uri2 = backend.upload_metadata(&env, clip_id2);
+    let signature2 = backend.sign_mint_with_nonce(&env, &user, clip_id2, &metadata_uri2, nonce);
+
+    let result = client.try_mint_with_signature(
+        &user,
+        &clip_id2,
+        &metadata_uri2,
+        &None,
+        &None,
+        &royalty,
+        &false,
+        &nonce,
+        &signature2,
+    );
+    assert!(result.is_err());
 }
 
 #[test]
