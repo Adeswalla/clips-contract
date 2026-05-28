@@ -1369,8 +1369,18 @@ impl ClipsNftContract {
             return Err(Error::Unauthorized);
         }
 
-        if data.is_soulbound {
-            return Err(Error::SoulboundTransferBlocked);
+        let approval_key = DataKey::Approved(token_id);
+        if env.storage().persistent().has(&approval_key) {
+            env.storage().persistent().remove(&approval_key);
+            
+            env.events().publish(
+                (symbol_short!("approval"),),
+                ApprovalEvent {
+                    owner: token_data.owner,
+                    operator: env.current_contract_address(),
+                    token_id,
+                },
+            );
         }
 
         // Handle royalty payment if sale_price is greater than zero
@@ -1764,7 +1774,7 @@ impl ClipsNftContract {
     /// Callable by the contract admin **or** the registered backend address.
     /// Limited to once per 30 days per token to prevent abuse.
     ///
-    /// Emits: `"meta_upd"` [`MetadataUpdatedEvent`].
+    /// Emits: `"mint"` [`MintEvent`].
     ///
     /// # Arguments
     /// * `caller`   — Must be the admin or the registered backend address.
