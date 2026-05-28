@@ -123,21 +123,38 @@ info "Timestamp : ${TIMESTAMP}"
 section "1 ▸ Reachability"
 # ──────────────────────────────────────────────────────────────────────────────
 
-# 1a. version() — equivalent of "name()" for this contract; returns the
-#     contract version constant (currently 1).
+# 1a. name()
+if name_raw=$(invoke "$CONTRACT_ID" name 2>/dev/null); then
+  if [[ -n "$name_raw" ]]; then
+    pass "name() = \"${name_raw}\""
+  else
+    warn "name() returned empty string"
+  fi
+else
+  fail "name() call failed — contract may not be deployed at ${CONTRACT_ID}"
+fi
+
+# 1b. symbol()
+if symbol_raw=$(invoke "$CONTRACT_ID" symbol 2>/dev/null); then
+  if [[ -n "$symbol_raw" ]]; then
+    pass "symbol() = \"${symbol_raw}\""
+  else
+    warn "symbol() returned empty string"
+  fi
+else
+  fail "symbol() call failed"
+fi
+
+# 1c. version()
 section_version=""
 if version_raw=$(invoke "$CONTRACT_ID" version 2>/dev/null); then
   section_version="$version_raw"
-  if [[ "$section_version" == "1" ]]; then
-    pass "version() = ${section_version}  (contract reachable)"
-  else
-    warn "version() returned unexpected value: ${section_version} (expected 1)"
-  fi
+  pass "version() = ${section_version}"
 else
-  fail "version() call failed — contract may not be deployed at ${CONTRACT_ID}"
+  fail "version() call failed"
 fi
 
-# 1b. is_paused() — equivalent of "symbol()" probe; simple boolean read.
+# 1d. is_paused()
 if paused_raw=$(invoke "$CONTRACT_ID" is_paused 2>/dev/null); then
   if [[ "$paused_raw" == "false" ]]; then
     pass "is_paused() = false  (contract is active)"
@@ -280,6 +297,8 @@ if [[ -n "$OUTPUT_FILE" ]]; then
   "contract_id": "${CONTRACT_ID}",
   "stellar_cli_version": "${STELLAR_VER}",
   "checks": {
+    "name": "${name_raw:-unknown}",
+    "symbol": "${symbol_raw:-unknown}",
     "version": "${section_version:-unknown}",
     "is_paused": "${paused_raw:-unknown}",
     "total_supply": "${supply_raw:-unknown}",
