@@ -802,6 +802,9 @@ impl ClipsNftContract {
     /// Replaces the current contract code with the new WASM hash while
     /// preserving all instance and persistent storage.
     ///
+    /// After calling this, invoke [`ClipsNftContract::migrate`] on the new
+    /// code to run any data-migration logic and bump the stored VERSION.
+    ///
     /// # Arguments
     /// * `admin`          — Must be the contract admin.
     /// * `new_wasm_hash` — 32-byte SHA-256 hash of the new WASM blob.
@@ -813,6 +816,88 @@ impl ClipsNftContract {
             UpgradeEvent { new_wasm_hash },
         );
         Ok(())
+    }
+
+    /// Run post-upgrade data migration.
+    ///
+    /// ⚠️ **Access Control: Admin only.**
+    ///
+    /// Must be called once after [`upgrade`] to:
+    /// 1. Verify the stored schema version matches what this binary expects.
+    /// 2. Apply any storage migrations needed for the new version.
+    /// 3. Bump the on-chain `ContractVersion` to `VERSION`.
+    ///
+    /// The function is idempotent for the same target version — calling it
+    /// twice is safe (second call returns `Ok(())` without re-running migrations).
+    ///
+    /// # Arguments
+    /// * `admin` — Must be the contract admin.
+    ///
+    /// # Errors
+    /// * [`Error::Unauthorized`] — caller is not the admin.
+    pub fn migrate(env: Env, admin: Address) -> Result<(), Error> {
+        Self::require_admin(&env, &admin)?;
+
+        let stored_version: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::ContractVersion)
+            .unwrap_or(0);
+
+        // Already at target version — nothing to do.
+        if stored_version >= VERSION {
+            return Ok(());
+        }
+
+        // ---------------------------------------------------------------
+        // Version-gated migration steps.
+        // Add a new `if stored_version < N` block for each future version.
+        // ---------------------------------------------------------------
+
+        // v0 → v1: seed TotalSupply from NextTokenId if it was never written
+        // (contracts deployed before TotalSupply was introduced stored 0).
+        if stored_version < 1 {
+            let has_total_supply = env
+                .storage()
+                .instance()
+                .has(&DataKey::TotalSupply);
+
+            if !has_total_supply {
+                let next_id: u32 = env
+                    .storage()
+                    .instance()
+                    .get(&DataKey::NextTokenId)
+                    .unwrap_or(1);
+                // total_supply = NextTokenId - 1 (token IDs start at 1).
+                let derived = next_id.saturating_sub(1);
+                env.storage()
+                    .instance()
+                    .set(&DataKey::TotalSupply, &derived);
+            }
+        }
+
+        // Stamp the new version so this block is never re-entered.
+        env.storage()
+            .instance()
+            .set(&DataKey::ContractVersion, &VERSION);
+
+        env.events().publish(
+            (symbol_short!("migrated"),),
+            MigratedEvent {
+                from_version: stored_version,
+                to_version: VERSION,
+            },
+        );
+
+        Ok(())
+    }
+
+    /// Returns the on-chain contract schema version (set by [`migrate`]).
+    pub fn contract_version(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::ContractVersion)
+            .unwrap_or(0)
     }
 
     // -------------------------------------------------------------------------
