@@ -878,6 +878,143 @@ impl ClipsNftContract {
         Ok(token_id)
     }
 
+    fn mint_core(
+        env: &Env,
+        to: &Address,
+        clip_id: u32,
+        metadata_uri: String,
+        image: Option<String>,
+        animation_url: Option<String>,
+        royalty: Royalty,
+        is_soulbound: bool,
+    ) -> Result<TokenId, Error> {
+        if Self::load_clip_token_id(env, clip_id).is_some() {
+            return Err(Error::ClipAlreadyMinted);
+        }
+
+        if env
+            .storage()
+            .persistent()
+            .get(&DataKey::BlacklistedClip(clip_id))
+            .unwrap_or(false)
+        {
+            return Err(Error::ClipBlacklisted);
+        }
+
+        let royalty = Self::normalize_royalty(env, royalty)?;
+
+        let token_id: TokenId = env
+            .storage()
+            .instance()
+            .get(&DataKey::NextTokenId)
+            .unwrap_or(1);
+
+        env.storage().persistent().set(
+            &DataKey::Token(token_id),
+            &TokenData {
+                owner: to.clone(),
+                clip_id,
+                is_soulbound,
+                metadata_uri: metadata_uri.clone(),
+                image: image.clone(),
+                animation_url: animation_url.clone(),
+                description: None,
+                external_url: None,
+                attributes: Vec::new(env),
+                royalty,
+            },
+        );
+        Self::bump_persistent_ttl(env, &DataKey::Token(token_id));
+        env.storage()
+            .persistent()
+            .set(&DataKey::ClipIdMinted(clip_id), &token_id);
+        Self::bump_persistent_ttl(env, &DataKey::ClipIdMinted(clip_id));
+
+        env.storage()
+            .instance()
+            .set(&DataKey::NextTokenId, &(token_id + 1));
+
+        let total_supply: u32 = env.storage().instance().get(&DataKey::TotalSupply).unwrap_or(0);
+        env.storage().instance().set(&DataKey::TotalSupply, &(total_supply + 1));
+
+        let balance: u32 = env.storage().persistent().get(&DataKey::Balance(to.clone())).unwrap_or(0);
+        env.storage().persistent().set(&DataKey::Balance(to.clone()), &(balance + 1));
+
+        env.events().publish(
+            (symbol_short!("mint"),),
+            MintEvent { to: to.clone(), clip_id, token_id, metadata_uri: metadata_uri.clone() },
+        );
+
+        env.events().publish(
+            (symbol_short!("transfer"),),
+            TransferEvent {
+                token_id,
+                from: env.current_contract_address(),
+                to: to.clone(),
+            },
+        );
+
+        let count_mint: u64 = env.storage().instance().get(&DataKey::CountMint).unwrap_or(0);
+        env.storage().instance().set(&DataKey::CountMint, &(count_mint + 1));
+        let total_gas_mint: u64 = env.storage().instance().get(&DataKey::TotalGasMint).unwrap_or(0);
+        env.storage().instance().set(&DataKey::TotalGasMint, &total_gas_mint.saturating_add(GAS_BASE_MINT));
+        Self::record_mint_timestamp(env, &to);
+        Self::update_circuit_breaker_counter(env, 1);
+
+        Ok(token_id)
+    }
+
+    /// Mint a new NFT for a video clip using a backend-signed payload and a
+    /// strictly increasing nonce to prevent replay attacks.
+    ///
+    /// # Arguments
+    /// * `to` — Recipient address (must authorize the call).
+    /// * `clip_id` — Off-chain clip identifier.
+    /// * `metadata_uri` — Metadata URI (IPFS or Arweave).
+    /// * `image` — Static thumbnail URL (optional).
+    /// * `animation_url` — Animated preview URL (optional).
+    /// * `royalty` — Royalty configuration for secondary sales.
+    /// * `is_soulbound` — When `true` the token cannot be transferred.
+    /// * `nonce` — Strictly increasing backend nonce for this recipient.
+    /// * `signature` — 64-byte Ed25519 signature from the registered backend signer.
+    pub fn mint_with_signature(
+        env: Env,
+        to: Address,
+        clip_id: u32,
+        metadata_uri: String,
+        image: Option<String>,
+        animation_url: Option<String>,
+        royalty: Royalty,
+        is_soulbound: bool,
+        nonce: u64,
+        signature: BytesN<64>,
+    ) -> Result<TokenId, Error> {
+        to.require_auth();
+        Self::require_not_paused(&env)?;
+        Self::enforce_mint_cooldown(&env, &to)?;
+        Self::check_circuit_breaker(&env, 1)?;
+
+        Self::validate_url(&env, &image, Error::InvalidImageUrl)?;
+        Self::validate_url(&env, &animation_url, Error::InvalidAnimationUrl)?;
+
+        Self::verify_clip_signature_with_nonce(&env, &to, clip_id, &metadata_uri, nonce, &signature)?;
+        Self::ensure_mint_nonce(&env, &to, nonce)?;
+
+        let token_id = Self::mint_core(
+            &env,
+            &to,
+            clip_id,
+            metadata_uri,
+            image,
+            animation_url,
+            royalty,
+            is_soulbound,
+        )?;
+        Self::record_mint_nonce(&env, &to, nonce);
+
+        Ok(token_id)
+    }
+
     // -------------------------------------------------------------------------
     // Approvals
     // -------------------------------------------------------------------------
@@ -2276,6 +2413,68 @@ impl ClipsNftContract {
 
         env.crypto().ed25519_verify(&signer, &Bytes::from(message), signature);
 
+        Ok(())
+    }
+
+    /// Ensure the backend-provided mint nonce is strictly increasing per owner.
+    fn ensure_mint_nonce(env: &Env, owner: &Address, nonce: u64) -> Result<(), Error> {
+        let last_nonce: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::LastMintNonce(owner.clone()))
+            .unwrap_or(0);
+        if nonce <= last_nonce {
+            return Err(Error::InvalidSignature);
+        }
+        Ok(())
+    }
+
+    fn record_mint_nonce(env: &Env, owner: &Address, nonce: u64) {
+        env.storage()
+            .persistent()
+            .set(&DataKey::LastMintNonce(owner.clone()), &nonce);
+    }
+
+    /// Verify the backend Ed25519 signature over the canonical mint payload that
+    /// includes a nonce to prevent replay attacks.
+    ///
+    /// Payload:
+    /// ```text
+    /// message = SHA-256(
+    ///      "mint_with_signature" ||
+    ///      clip_id_le_4_bytes ||
+    ///      SHA-256(XDR(owner)) ||
+    ///      SHA-256(UTF-8(metadata_uri)) ||
+    ///      nonce_le_8_bytes
+    /// )
+    /// ```
+    fn verify_clip_signature_with_nonce(
+        env: &Env,
+        owner: &Address,
+        clip_id: u32,
+        metadata_uri: &String,
+        nonce: u64,
+        signature: &BytesN<64>,
+    ) -> Result<(), Error> {
+        let signer: BytesN<32> = env
+            .storage()
+            .instance()
+            .get(&DataKey::Signer)
+            .ok_or(Error::SignerNotSet)?;
+
+        let owner_hash: BytesN<32> = env.crypto().sha256(&owner.clone().to_xdr(env)).into();
+        let uri_hash: BytesN<32> = env.crypto().sha256(&Bytes::from(metadata_uri.to_xdr(env))).into();
+
+        let mut preimage = Bytes::new(env);
+        preimage.append(&Bytes::from_slice(env, b"mint_with_signature"));
+        preimage.extend_from_array(&clip_id.to_le_bytes());
+        preimage.append(&Bytes::from(owner_hash));
+        preimage.append(&Bytes::from(uri_hash));
+        preimage.extend_from_array(&nonce.to_le_bytes());
+
+        let message: BytesN<32> = env.crypto().sha256(&preimage).into();
+
+        env.crypto().ed25519_verify(&signer, &Bytes::from(message), signature);
         Ok(())
     }
 
