@@ -1939,9 +1939,19 @@ impl ClipsNftContract {
         env.storage().instance().get(&DataKey::Paused).unwrap_or(false)
     }
 
+    /// Returns an approximate fee for mint transactions in stroops.
+    pub fn estimate_mint_fee(_env: Env) -> i128 {
+        GAS_BASE_MINT as i128
+    }
+
     /// Returns an approximate fee for transfer transactions in stroops.
     pub fn estimate_transfer_fee(_env: Env) -> i128 {
         GAS_BASE_TRANSFER as i128
+    }
+
+    /// Returns the contract version constant.
+    pub fn version(_env: Env) -> u32 {
+        VERSION
     }
 
     /// Returns key contract metadata and configuration.
