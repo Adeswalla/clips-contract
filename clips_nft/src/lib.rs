@@ -519,6 +519,13 @@ pub struct SignerUpdatedEvent {
     pub new_pubkey: BytesN<32>,
 }
 
+/// Emitted when the platform recipient address is updated by the admin.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PlatformRecipientUpdatedEvent {
+    pub new_recipient: Address,
+}
+
 /// Emitted when a token's royalty configuration is updated by the admin.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
