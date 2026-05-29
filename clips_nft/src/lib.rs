@@ -1476,9 +1476,10 @@ impl ClipsNftContract {
         Ok(Self::load_token(&env, token_id)?.royalty)
     }
 
-    /// Returns the total number of tokens minted (not adjusted for burns).
+    /// Returns the total number of tokens currently in circulation.
     ///
-    /// Derived from `NextTokenId - 1` — no separate counter needed.
+    /// Maintains a separate counter that is incremented on mint and decremented on burn,
+    /// ensuring accurate supply accounting across the contract lifetime.
     pub fn total_supply(env: Env) -> u32 {
         env.storage()
             .instance()
