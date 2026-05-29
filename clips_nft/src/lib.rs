@@ -348,7 +348,7 @@ impl ClipsNftContract {
     /// * `new_wasm_hash` - 32-byte SHA-256 hash of the new WASM blob
     pub fn upgrade(env: Env, admin: Address, new_wasm_hash: BytesN<32>) -> Result<(), Error> {
         Self::require_admin(&env, &admin)?;
-        env.deployer().update_current_contract_wasm(&new_wasm_hash);
+        env.deployer().update_current_contract_wasm(new_wasm_hash.clone());
         env.events().publish(
             (symbol_short!("upgrade"),),
             UpgradeEvent { new_wasm_hash },
