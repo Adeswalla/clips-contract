@@ -205,6 +205,8 @@ pub enum DataKey {
     UsedSignature(BytesN<32>),
     /// Issue #299: optional human-readable reason provided when pausing
     PauseReason,
+    /// Issue #470: maximum royalty basis points creators can assign (0–10_000)
+    MaxRoyaltyBps,
 }
 
 // =============================================================================
@@ -906,6 +908,30 @@ impl ClipsNftContract {
 
     pub fn get_default_royalty_bps(env: Env) -> u32 {
         env.storage().instance().get(&DataKey::DefaultRoyaltyBps).unwrap_or(0)
+    }
+
+    // -------------------------------------------------------------------------
+    // Issue #470: Maximum royalty configuration
+    // -------------------------------------------------------------------------
+
+    /// Set the maximum royalty basis points that creators are allowed to assign.
+    ///
+    /// Enforces the security constraint that royalties cannot exceed this cap.
+    /// Range: `0`–`10_000` (0%–100%). Admin-only.
+    ///
+    /// # Errors
+    /// - `Error::RoyaltyTooHigh` if `max_bps > 10_000`
+    pub fn set_max_royalty_bps(env: Env, admin: Address, max_bps: u32) -> Result<(), Error> {
+        Self::require_admin(&env, &admin)?;
+        if max_bps > 10_000 { return Err(Error::RoyaltyTooHigh); }
+        env.storage().instance().set(&DataKey::MaxRoyaltyBps, &max_bps);
+        Ok(())
+    }
+
+    /// Return the configured maximum royalty in basis points.
+    /// Defaults to `10_000` (100%) when not set, meaning no extra restriction.
+    pub fn get_max_royalty_bps(env: Env) -> u32 {
+        env.storage().instance().get(&DataKey::MaxRoyaltyBps).unwrap_or(10_000)
     }
 
     // -------------------------------------------------------------------------
