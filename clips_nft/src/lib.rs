@@ -205,6 +205,8 @@ pub enum DataKey {
     UsedSignature(BytesN<32>),
     /// Issue #299: optional human-readable reason provided when pausing
     PauseReason,
+    /// Issue #471: configurable fee charged per NFT mint (in stroops)
+    MintFee,
 }
 
 // =============================================================================
@@ -906,6 +908,27 @@ impl ClipsNftContract {
 
     pub fn get_default_royalty_bps(env: Env) -> u32 {
         env.storage().instance().get(&DataKey::DefaultRoyaltyBps).unwrap_or(0)
+    }
+
+    // -------------------------------------------------------------------------
+    // Issue #471: Mint fee configuration
+    // -------------------------------------------------------------------------
+
+    /// Set the fee (in stroops) charged whenever an NFT is minted.
+    /// Pass `0` to make minting free. Admin-only.
+    ///
+    /// # Errors
+    /// - `Error::InvalidSalePrice` if `fee` is negative
+    pub fn set_mint_fee(env: Env, admin: Address, fee: i128) -> Result<(), Error> {
+        Self::require_admin(&env, &admin)?;
+        if fee < 0 { return Err(Error::InvalidSalePrice); }
+        env.storage().instance().set(&DataKey::MintFee, &fee);
+        Ok(())
+    }
+
+    /// Return the configured mint fee in stroops. Defaults to `0` (free minting).
+    pub fn get_mint_fee(env: Env) -> i128 {
+        env.storage().instance().get(&DataKey::MintFee).unwrap_or(0)
     }
 
     // -------------------------------------------------------------------------
