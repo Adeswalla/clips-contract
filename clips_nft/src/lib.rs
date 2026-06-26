@@ -205,6 +205,8 @@ pub enum DataKey {
     UsedSignature(BytesN<32>),
     /// Issue #299: optional human-readable reason provided when pausing
     PauseReason,
+    /// Issue #472: configurable fee charged on NFT burn (in stroops)
+    BurnFee,
 }
 
 // =============================================================================
@@ -906,6 +908,27 @@ impl ClipsNftContract {
 
     pub fn get_default_royalty_bps(env: Env) -> u32 {
         env.storage().instance().get(&DataKey::DefaultRoyaltyBps).unwrap_or(0)
+    }
+
+    // -------------------------------------------------------------------------
+    // Issue #472: Burn fee configuration
+    // -------------------------------------------------------------------------
+
+    /// Set the fee (in stroops) charged when an NFT is burned.
+    /// Pass `0` to disable the burn fee. Admin-only.
+    ///
+    /// # Errors
+    /// Returns `Error::InvalidSalePrice` if `fee` overflows a reasonable i128.
+    pub fn set_burn_fee(env: Env, admin: Address, fee: i128) -> Result<(), Error> {
+        Self::require_admin(&env, &admin)?;
+        if fee < 0 { return Err(Error::InvalidSalePrice); }
+        env.storage().instance().set(&DataKey::BurnFee, &fee);
+        Ok(())
+    }
+
+    /// Return the configured burn fee in stroops. Defaults to `0`.
+    pub fn get_burn_fee(env: Env) -> i128 {
+        env.storage().instance().get(&DataKey::BurnFee).unwrap_or(0)
     }
 
     // -------------------------------------------------------------------------
