@@ -16,7 +16,7 @@ pub use default_royalty::{
     get_default_royalty_bps, set_default_royalty_bps, DEFAULT_ROYALTY_BPS, MAX_ROYALTY_BPS,
 };
 pub use platform_fee::{get_platform_fee, set_platform_fee, MAX_PLATFORM_FEE_BPS};
-pub use types::{DataKey, Error, MintEvent, Royalty, RoyaltyInfo, TokenData, TokenId};
+pub use types::{DataKey, Error, MintEvent, Royalty, RoyaltyInfo, RoyaltyPaidEvent, TokenData, TokenId};
 
 use soroban_sdk::{
     contract, contractimpl, BytesN, Env, String,
@@ -264,6 +264,32 @@ impl ClipCashNFT {
             royalty_amount: amount,
             asset_address: r.asset_address,
         })
+    }
+
+    /// Pay royalties for a token sale. Emits a RoyaltyPaidEvent.
+    pub fn pay_royalty(
+        env: Env,
+        payer: Address,
+        token_id: TokenId,
+        sale_price: i128,
+    ) -> Result<(), Error> {
+        payer.require_auth();
+        if sale_price <= 0 {
+            return Err(Error::InvalidBasisPoints);
+        }
+        let r = Self::get_royalty(env.clone(), token_id)?;
+        let amount = sale_price * r.basis_points as i128 / 10_000;
+        env.events().publish(
+            ("royalty_paid",),
+            RoyaltyPaidEvent {
+                token_id,
+                payer,
+                receiver: r.recipient,
+                amount,
+                asset_address: r.asset_address,
+            },
+        );
+        Ok(())
     }
 
     /// Update royalty config for a token. Admin only.
