@@ -9,6 +9,7 @@
 mod config;
 mod default_royalty;
 mod platform_fee;
+mod token_storage;
 mod types;
 
 pub use config::{get_config, set_config, Config, CONTRACT_VERSION};
@@ -154,15 +155,9 @@ impl ClipCashNFT {
             .get(&DataKey::NextTokenId)
             .unwrap_or(0);
 
-        env.storage()
-            .persistent()
-            .set(&DataKey::Token(token_id), &TokenData { owner: to.clone(), clip_id });
-        env.storage()
-            .persistent()
-            .set(&DataKey::Metadata(token_id), &metadata_uri);
-        env.storage()
-            .persistent()
-            .set(&DataKey::Royalty(token_id), &royalty);
+        token_storage::set_token(&env, token_id, &TokenData { owner: to.clone(), clip_id });
+        token_storage::set_metadata(&env, token_id, &metadata_uri);
+        token_storage::set_royalty(&env, token_id, &royalty);
         env.storage()
             .persistent()
             .set(&DataKey::ClipIdMinted(clip_id), &token_id);
@@ -193,25 +188,23 @@ impl ClipCashNFT {
     ) -> Result<(), Error> {
         from.require_auth();
         Self::require_not_paused(&env)?;
-        let mut data = Self::get_token_data(&env, token_id)?;
+        let mut data = token_storage::get_token(&env, token_id)?;
         if data.owner != from {
             return Err(Error::Unauthorized);
         }
         data.owner = to;
-        env.storage().persistent().set(&DataKey::Token(token_id), &data);
+        token_storage::set_token(&env, token_id, &data);
         Ok(())
     }
 
     /// Burn an NFT. Only the current owner may burn.
     pub fn burn(env: Env, owner: Address, token_id: TokenId) -> Result<(), Error> {
         owner.require_auth();
-        let data = Self::get_token_data(&env, token_id)?;
+        let data = token_storage::get_token(&env, token_id)?;
         if data.owner != owner {
             return Err(Error::Unauthorized);
         }
-        env.storage().persistent().remove(&DataKey::Token(token_id));
-        env.storage().persistent().remove(&DataKey::Metadata(token_id));
-        env.storage().persistent().remove(&DataKey::Royalty(token_id));
+        token_storage::remove_token(&env, token_id);
         Ok(())
     }
 
@@ -219,15 +212,12 @@ impl ClipCashNFT {
 
     /// Returns the owner of a token.
     pub fn owner_of(env: Env, token_id: TokenId) -> Result<Address, Error> {
-        Ok(Self::get_token_data(&env, token_id)?.owner)
+        Ok(token_storage::get_token(&env, token_id)?.owner)
     }
 
     /// Returns the metadata URI of a token.
     pub fn token_uri(env: Env, token_id: TokenId) -> Result<String, Error> {
-        env.storage()
-            .persistent()
-            .get(&DataKey::Metadata(token_id))
-            .ok_or(Error::TokenNotFound)
+        token_storage::get_metadata(&env, token_id)
     }
 
     /// Alias for `token_uri`.
@@ -245,10 +235,7 @@ impl ClipCashNFT {
 
     /// Returns the royalty struct for a token.
     pub fn get_royalty(env: Env, token_id: TokenId) -> Result<Royalty, Error> {
-        env.storage()
-            .persistent()
-            .get(&DataKey::Royalty(token_id))
-            .ok_or(Error::TokenNotFound)
+        token_storage::get_royalty(&env, token_id)
     }
 
     /// Returns royalty receiver and computed amount for a given sale price.
@@ -257,7 +244,7 @@ impl ClipCashNFT {
         token_id: TokenId,
         sale_price: i128,
     ) -> Result<RoyaltyInfo, Error> {
-        let r = Self::get_royalty(env, token_id)?;
+        let r = token_storage::get_royalty(&env, token_id)?;
         let amount = sale_price * r.basis_points as i128 / 10_000;
         Ok(RoyaltyInfo {
             receiver: r.recipient,
@@ -278,12 +265,10 @@ impl ClipCashNFT {
         if new_royalty.basis_points > 10_000 {
             return Err(Error::InvalidBasisPoints);
         }
-        if !env.storage().persistent().has(&DataKey::Token(token_id)) {
+        if !token_storage::token_exists(&env, token_id) {
             return Err(Error::TokenNotFound);
         }
-        env.storage()
-            .persistent()
-            .set(&DataKey::Royalty(token_id), &new_royalty);
+        token_storage::set_royalty(&env, token_id, &new_royalty);
         Ok(())
     }
 
@@ -294,7 +279,7 @@ impl ClipCashNFT {
 
     /// Returns true if the token exists.
     pub fn exists(env: Env, token_id: TokenId) -> bool {
-        env.storage().persistent().has(&DataKey::Token(token_id))
+        token_storage::token_exists(&env, token_id)
     }
 
     // ─── Internal helpers ────────────────────────────────────────────────────
@@ -321,12 +306,5 @@ impl ClipCashNFT {
             return Err(Error::ContractPaused);
         }
         Ok(())
-    }
-
-    fn get_token_data(env: &Env, token_id: TokenId) -> Result<TokenData, Error> {
-        env.storage()
-            .persistent()
-            .get(&DataKey::Token(token_id))
-            .ok_or(Error::TokenNotFound)
     }
 }
