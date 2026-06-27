@@ -16,7 +16,7 @@ pub use default_royalty::{
     get_default_royalty_bps, set_default_royalty_bps, DEFAULT_ROYALTY_BPS, MAX_ROYALTY_BPS,
 };
 pub use platform_fee::{get_platform_fee, set_platform_fee, MAX_PLATFORM_FEE_BPS};
-pub use types::{DataKey, Error, MintEvent, Royalty, RoyaltyInfo, TokenData, TokenId};
+pub use types::{BurnEvent, DataKey, Error, MintEvent, Royalty, RoyaltyInfo, TokenData, TokenId};
 
 use soroban_sdk::{
     contract, contractimpl, BytesN, Env, String,
@@ -212,6 +212,7 @@ impl ClipCashNFT {
         env.storage().persistent().remove(&DataKey::Token(token_id));
         env.storage().persistent().remove(&DataKey::Metadata(token_id));
         env.storage().persistent().remove(&DataKey::Royalty(token_id));
+        env.events().publish(("burn",), BurnEvent { owner, token_id });
         Ok(())
     }
 
