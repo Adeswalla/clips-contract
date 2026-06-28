@@ -56,6 +56,14 @@ pub enum DataKey {
     Config,
     /// List of supported payment currency addresses.
     SupportedCurrencies,
+    /// Creator wallet address for a token (#510).
+    Creator(u32),
+    /// Metadata URI stored via dedicated token URI storage (#507).
+    TokenUri(u32),
+    /// Frozen status for a token (#520).
+    FrozenToken(u32),
+    /// Token ownership index for a wallet (#516).
+    WalletTokens(Address),
 }
 
 #[contracterror]

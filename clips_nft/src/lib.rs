@@ -10,13 +10,21 @@ mod blacklist;
 mod config;
 mod config_guard;
 mod config_validator;
+mod creator_storage;
 mod default_royalty;
+mod frozen_token;
 mod payment_currency;
 mod platform_fee;
 mod token_approval;
+mod token_uri_storage;
 mod types;
+mod wallet_token_index;
 
 pub use blacklist::{add_wallet, is_blacklisted, remove_wallet};
+pub use creator_storage::{get_creator, set_creator};
+pub use frozen_token::{freeze_token, is_frozen, unfreeze_token};
+pub use token_uri_storage::{get_token_uri, set_token_uri};
+pub use wallet_token_index::{add_token_to_wallet, get_wallet_tokens, remove_token_from_wallet};
 pub use config::{get_config, set_config, Config, CONTRACT_VERSION};
 pub use default_royalty::{
     get_default_royalty_bps, set_default_royalty_bps, DEFAULT_ROYALTY_BPS, MAX_ROYALTY_BPS,
