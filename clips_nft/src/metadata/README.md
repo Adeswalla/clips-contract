@@ -23,6 +23,14 @@ metadata/
 Defines the core metadata structures:
 
 - **`Attribute`**: Represents a trait/attribute with `trait_type` and `value` fields
+- **`ClipMetadata`**: Primary metadata structure for ClipCash NFTs including:
+  - `clip_id`: Unique identifier for the video clip (required)
+  - `metadata_uri`: Primary metadata URI - IPFS, Arweave, or HTTPS (required)
+  - `image`: Optional image preview URL (thumbnail or poster frame)
+  - `animation_url`: Optional animation/video content URL
+  - `description`: Optional human-readable description
+  - `external_url`: Optional external link for more information
+  - `attributes`: Collection of trait attributes
 - **`TokenMetadata`**: Complete metadata representation including:
   - `metadata_uri`: Primary metadata URI (IPFS, Arweave, or HTTPS)
   - `image`: Optional image URL
@@ -77,7 +85,58 @@ Utility functions for metadata operations:
 
 ## Usage Examples
 
-### Basic Usage
+### Basic Usage with ClipMetadata
+
+```rust
+use crate::metadata::{ClipMetadata, validate_metadata_uri};
+
+// Create minimal ClipMetadata
+let clip_id = 12345u32;
+let uri = String::from_str(&env, "ipfs://QmHash");
+let metadata = ClipMetadata::new(&env, clip_id, uri.clone());
+
+// Validate metadata URI
+validate_metadata_uri(&env, &uri)?;
+```
+
+### ClipMetadata with Full Data
+
+```rust
+use crate::metadata::{ClipMetadata, Attribute};
+
+let clip_id = 67890u32;
+let uri = String::from_str(&env, "ipfs://QmFullHash");
+
+// Create attributes
+let mut attributes = Vec::new(&env);
+attributes.push_back(Attribute {
+    trait_type: String::from_str(&env, "virality_score"),
+    value: String::from_str(&env, "98"),
+});
+attributes.push_back(Attribute {
+    trait_type: String::from_str(&env, "duration"),
+    value: String::from_str(&env, "42s"),
+});
+
+// Create full metadata
+let metadata = ClipMetadata::with_full_data(
+    clip_id,
+    uri,
+    Some(String::from_str(&env, "https://example.com/thumb.jpg")),
+    Some(String::from_str(&env, "ipfs://QmVideoHash")),
+    Some(String::from_str(&env, "Epic gaming moment")),
+    Some(String::from_str(&env, "https://clipcash.com/clip/67890")),
+    attributes,
+);
+
+// Check for optional fields
+if metadata.has_optional_fields() {
+    let attr_count = metadata.attribute_count();
+    // Process rich metadata
+}
+```
+
+### Basic Usage with TokenMetadata
 
 ```rust
 use crate::metadata::{

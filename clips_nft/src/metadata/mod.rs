@@ -38,7 +38,7 @@ mod types;
 mod validation;
 
 // Re-export public types
-pub use types::{Attribute, TokenMetadata};
+pub use types::{Attribute, ClipMetadata, TokenMetadata};
 
 // Re-export validation functions
 pub use validation::{
