@@ -15,6 +15,9 @@ mod payment_currency;
 mod platform_fee;
 mod token_approval;
 mod types;
+pub mod storage_guard;
+pub mod storage_serializer;
+pub mod storage_validator;
 
 pub use blacklist::{add_wallet, is_blacklisted, remove_wallet};
 pub use config::{get_config, set_config, Config, CONTRACT_VERSION};
