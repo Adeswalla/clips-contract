@@ -7,16 +7,18 @@
 #![no_std]
 
 mod blacklist;
+mod clip_id_storage;
 mod config;
 mod config_guard;
 mod config_validator;
 mod creator_storage;
 mod default_royalty;
-mod frozen_token;
+mod minted_clip_index;
 mod payment_currency;
 mod platform_fee;
+mod royalty_storage;
 mod token_approval;
-mod token_uri_storage;
+mod token_metadata_storage;
 mod types;
 mod wallet_token_index;
 
