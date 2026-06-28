@@ -369,6 +369,32 @@ impl ClipCashNFT {
         })
     }
 
+    /// Pay royalties for a token sale. Emits a RoyaltyPaidEvent.
+    pub fn pay_royalty(
+        env: Env,
+        payer: Address,
+        token_id: TokenId,
+        sale_price: i128,
+    ) -> Result<(), Error> {
+        payer.require_auth();
+        if sale_price <= 0 {
+            return Err(Error::InvalidBasisPoints);
+        }
+        let r = Self::get_royalty(env.clone(), token_id)?;
+        let amount = sale_price * r.basis_points as i128 / 10_000;
+        env.events().publish(
+            ("royalty_paid",),
+            RoyaltyPaidEvent {
+                token_id,
+                payer,
+                receiver: r.recipient,
+                amount,
+                asset_address: r.asset_address,
+            },
+        );
+        Ok(())
+    }
+
     /// Update royalty config for a token. Admin only.
     pub fn set_royalty(
         env: Env,
