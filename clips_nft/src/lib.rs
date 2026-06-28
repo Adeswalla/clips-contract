@@ -313,6 +313,7 @@ impl ClipCashNFT {
         env.storage().persistent().remove(&DataKey::Token(token_id));
         env.storage().persistent().remove(&DataKey::Metadata(token_id));
         env.storage().persistent().remove(&DataKey::Royalty(token_id));
+        env.events().publish(("burn",), BurnEvent { owner, token_id });
         Ok(())
     }
 

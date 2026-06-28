@@ -35,6 +35,13 @@ pub struct MintEvent {
 }
 
 #[contracttype]
+#[derive(Clone)]
+pub struct BurnEvent {
+    pub owner: Address,
+    pub token_id: TokenId,
+}
+
+#[contracttype]
 pub enum DataKey {
     Admin,
     NextTokenId,
