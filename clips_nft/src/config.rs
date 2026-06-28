@@ -1,102 +1,129 @@
-//! Global configuration storage module (issue #457).
+//! Global contract configuration.
 //!
-//! Centralises all contract-level config values behind typed getters and
-//! setters backed by `instance` persistent storage.  Every value written here
-//! survives contract upgrades unchanged because instance storage travels with
-//! the contract address.
-//!
-//! ## Storage layout
-//!
-//! | `DataKey`                      | Type     | Default | Description                          |
-//! |-------------------------------|----------|---------|--------------------------------------|
-//! | `PlatformFeeBps`              | `u32`    | `100`   | Platform royalty in basis points     |
-//! | `DefaultRoyaltyBps`           | `u32`    | `0`     | Default creator royalty in bps       |
-//! | `MintCooldownSeconds`         | `u64`    | `0`     | Per-wallet mint cooldown             |
-//! | `CircuitBreakerEnabled`       | `bool`   | `false` | Whether the circuit breaker is on    |
-//! | `CircuitBreakerThreshold`     | `u64`    | `100`   | Max mints per window before trip     |
-//! | `CircuitBreakerWindowSeconds` | `u64`    | `60`    | Rolling window length in seconds     |
+//! [`Config`] consolidates all top-level settings into a single storable
+//! struct so callers can read or update the contract state in one round-trip.
 
-use soroban_sdk::{contracttype, Env};
+use soroban_sdk::{contracttype, Address, Env, String};
 
-use crate::DataKey;
+use crate::types::{DataKey, Error};
 
-/// Snapshot of all global configuration values.
+/// Contract version constant — bump on breaking interface changes.
+pub const CONTRACT_VERSION: u32 = 1;
+
+/// Default and limit constants for batch/collection size.
+pub const MAX_BATCH_MINT_SIZE: u32 = 50;
+pub const MAX_COLLECTION_SIZE: u32 = 10_000;
+
+/// Reusable struct that holds every global contract setting.
+///
+/// Stored under [`DataKey::Config`] in instance storage.
 #[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct GlobalConfig {
+#[derive(Clone)]
+pub struct Config {
+    /// Contract owner / administrator address.
+    pub owner: Address,
+    /// Semantic version number (monotonically increasing integer).
+    pub version: u32,
+    /// Platform fee in basis points (0–1 000, i.e. 0 %–10 %).
     pub platform_fee_bps: u32,
+    /// Default royalty in basis points applied to newly minted NFTs (0–10 000).
     pub default_royalty_bps: u32,
-    pub mint_cooldown_seconds: u64,
-    pub circuit_breaker_enabled: bool,
-    pub circuit_breaker_threshold: u64,
-    pub circuit_breaker_window_seconds: u64,
+    /// When `true`, mint and transfer operations are blocked.
+    pub paused: bool,
+    /// Maximum number of NFTs mintable in a single batch call (1–100).
+    pub max_batch_mint_size: u32,
+    /// Maximum total NFTs in a collection (1–100 000).
+    pub max_collection_size: u32,
 }
 
-const DEFAULT_PLATFORM_FEE_BPS: u32 = 100;
-const DEFAULT_ROYALTY_BPS: u32 = 0;
-const DEFAULT_COOLDOWN: u64 = 0;
-const DEFAULT_CB_ENABLED: bool = false;
-const DEFAULT_CB_THRESHOLD: u64 = 100;
-const DEFAULT_CB_WINDOW: u64 = 60;
+/// Event emitted whenever a config value changes.
+#[contracttype]
+#[derive(Clone)]
+pub struct ConfigUpdateEvent {
+    pub key: String,
+    pub old_value: u32,
+    pub new_value: u32,
+    pub updater: Address,
+}
 
-/// Read the current global configuration from storage.
-pub fn get(env: &Env) -> GlobalConfig {
-    GlobalConfig {
-        platform_fee_bps: env
-            .storage()
-            .instance()
-            .get(&DataKey::PlatformFeeBps)
-            .unwrap_or(DEFAULT_PLATFORM_FEE_BPS),
-        default_royalty_bps: env
-            .storage()
-            .instance()
-            .get(&DataKey::DefaultRoyaltyBps)
-            .unwrap_or(DEFAULT_ROYALTY_BPS),
-        mint_cooldown_seconds: env
-            .storage()
-            .instance()
-            .get(&DataKey::MintCooldownSeconds)
-            .unwrap_or(DEFAULT_COOLDOWN),
-        circuit_breaker_enabled: env
-            .storage()
-            .instance()
-            .get(&DataKey::CircuitBreakerEnabled)
-            .unwrap_or(DEFAULT_CB_ENABLED),
-        circuit_breaker_threshold: env
-            .storage()
-            .instance()
-            .get(&DataKey::CircuitBreakerThreshold)
-            .unwrap_or(DEFAULT_CB_THRESHOLD),
-        circuit_breaker_window_seconds: env
-            .storage()
-            .instance()
-            .get(&DataKey::CircuitBreakerWindowSeconds)
-            .unwrap_or(DEFAULT_CB_WINDOW),
+/// Persist a [`Config`] snapshot to instance storage, emitting events for changed fields.
+///
+/// # Errors
+/// Returns [`Error::InvalidBasisPoints`] when fee or royalty limits are exceeded,
+/// or [`Error::InvalidConfig`] when batch/collection size limits are violated.
+pub fn set_config(env: &Env, config: Config, updater: Address) -> Result<(), Error> {
+    if config.platform_fee_bps > crate::platform_fee::MAX_PLATFORM_FEE_BPS {
+        return Err(Error::InvalidBasisPoints);
+    }
+    if config.default_royalty_bps > crate::default_royalty::MAX_ROYALTY_BPS {
+        return Err(Error::InvalidBasisPoints);
+    }
+    if config.max_batch_mint_size < 1 || config.max_batch_mint_size > 100 {
+        return Err(Error::InvalidConfig);
+    }
+    if config.max_collection_size < 1 || config.max_collection_size > 100_000 {
+        return Err(Error::InvalidConfig);
+    }
+
+    let old = get_config(env);
+
+    // Emit events for changed u32 fields.
+    if let Some(ref old) = old {
+        emit_if_changed(env, &updater, "platform_fee_bps", old.platform_fee_bps, config.platform_fee_bps);
+        emit_if_changed(env, &updater, "default_royalty_bps", old.default_royalty_bps, config.default_royalty_bps);
+        emit_if_changed(env, &updater, "max_batch_mint_size", old.max_batch_mint_size, config.max_batch_mint_size);
+        emit_if_changed(env, &updater, "max_collection_size", old.max_collection_size, config.max_collection_size);
+    }
+
+    env.storage().instance().set(&DataKey::Config, &config);
+    Ok(())
+}
+
+fn emit_if_changed(env: &Env, updater: &Address, key: &str, old_value: u32, new_value: u32) {
+    if old_value != new_value {
+        env.events().publish(
+            ("config_update",),
+            ConfigUpdateEvent {
+                key: String::from_str(env, key),
+                old_value,
+                new_value,
+                updater: updater.clone(),
+            },
+        );
     }
 }
 
-/// Persist a full `GlobalConfig` snapshot to storage.
-///
-/// Individual fields are written separately so that a partial update (e.g.
-/// only `platform_fee_bps` changed) still uses the existing setters on the
-/// contract and the values remain consistent.
-pub fn set(env: &Env, cfg: &GlobalConfig) {
-    env.storage()
-        .instance()
-        .set(&DataKey::PlatformFeeBps, &cfg.platform_fee_bps);
-    env.storage()
-        .instance()
-        .set(&DataKey::DefaultRoyaltyBps, &cfg.default_royalty_bps);
-    env.storage()
-        .instance()
-        .set(&DataKey::MintCooldownSeconds, &cfg.mint_cooldown_seconds);
-    env.storage()
-        .instance()
-        .set(&DataKey::CircuitBreakerEnabled, &cfg.circuit_breaker_enabled);
-    env.storage()
-        .instance()
-        .set(&DataKey::CircuitBreakerThreshold, &cfg.circuit_breaker_threshold);
-    env.storage()
-        .instance()
-        .set(&DataKey::CircuitBreakerWindowSeconds, &cfg.circuit_breaker_window_seconds);
+/// Return the stored [`Config`], or `None` if the contract is not yet initialized.
+pub fn get_config(env: &Env) -> Option<Config> {
+    env.storage().instance().get(&DataKey::Config)
+}
+
+/// Reusable service for reading, validating, updating config and emitting events.
+pub struct ConfigService;
+
+impl ConfigService {
+    pub fn read_config(env: &Env) -> Option<Config> {
+        get_config(env)
+    }
+
+    pub fn validate_update(config: &Config) -> Result<(), Error> {
+        if config.platform_fee_bps > crate::platform_fee::MAX_PLATFORM_FEE_BPS {
+            return Err(Error::InvalidBasisPoints);
+        }
+        if config.default_royalty_bps > crate::default_royalty::MAX_ROYALTY_BPS {
+            return Err(Error::InvalidBasisPoints);
+        }
+        if config.max_batch_mint_size < 1 || config.max_batch_mint_size > 100 {
+            return Err(Error::InvalidConfig);
+        }
+        if config.max_collection_size < 1 || config.max_collection_size > 100_000 {
+            return Err(Error::InvalidConfig);
+        }
+        Ok(())
+    }
+
+    pub fn update_config(env: &Env, config: Config, updater: Address) -> Result<(), Error> {
+        Self::validate_update(&config)?;
+        set_config(env, config, updater)
+    }
 }
