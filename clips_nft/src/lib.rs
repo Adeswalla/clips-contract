@@ -1,6 +1,7 @@
 #![no_std]
 
 pub mod safe_math;
+pub mod config;
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, xdr::ToXdr, Address, Bytes,
@@ -53,6 +54,7 @@ pub enum Error {
     MintingPaused = 25,
     CircuitBreakerTripped = 26,
     MetadataLocked = 27,
+    NotInitialized = 28,
 }
 
 // =============================================================================
@@ -121,6 +123,19 @@ pub struct ContractInfo {
 pub struct WithdrawRequest {
     pub amount: i128,
     pub unlock_time: u64,
+}
+
+/// Full contract metadata returned by `get_contract_metadata`.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ContractMetadata {
+    pub contract_name: String,
+    pub version: u32,
+    pub owner: Address,
+    pub collection_name: String,
+    pub collection_symbol: String,
+    pub platform_fee_bps: u32,
+    pub default_royalty_bps: u32,
 }
 
 // =============================================================================
@@ -382,6 +397,7 @@ impl ClipsNftContract {
     /// Step 2: pending owner accepts and becomes the new admin.
     /// Emits `OwnershipTransferred` event.
     pub fn accept_ownership(env: Env, new_owner: Address) -> Result<(), Error> {
+        Self::require_initialized(&env)?;
         new_owner.require_auth();
         let pending: Address = env
             .storage()
@@ -425,6 +441,7 @@ impl ClipsNftContract {
         is_soulbound: bool,
         signature: BytesN<64>,
     ) -> Result<TokenId, Error> {
+        Self::require_initialized(&env)?;
         to.require_auth();
         Self::require_not_paused(&env)?;
         if env.storage().instance().get::<DataKey, bool>(&DataKey::MintingPaused).unwrap_or(false) {
@@ -495,6 +512,7 @@ impl ClipsNftContract {
         sale_price: i128,
         payment_asset: Option<Address>,
     ) -> Result<(), Error> {
+        Self::require_initialized(&env)?;
         from.require_auth();
         Self::require_not_paused(&env)?;
         if env.storage().persistent().get::<DataKey, bool>(&DataKey::Frozen(token_id)).unwrap_or(false) {
@@ -551,6 +569,7 @@ impl ClipsNftContract {
     }
 
     pub fn burn(env: Env, owner: Address, token_id: TokenId) -> Result<(), Error> {
+        Self::require_initialized(&env)?;
         owner.require_auth();
         if env.storage().persistent().get::<DataKey, bool>(&DataKey::Frozen(token_id)).unwrap_or(false) {
             return Err(Error::TokenFrozen);
@@ -574,6 +593,7 @@ impl ClipsNftContract {
         Ok(())
     }
     pub fn batch_burn(env: Env, owner: Address, token_ids: Vec<TokenId>) -> Result<(), Error> {
+        Self::require_initialized(&env)?;
         owner.require_auth();
 
         // Process each token
@@ -657,6 +677,7 @@ impl ClipsNftContract {
 
 
     pub fn approve(env: Env, caller: Address, operator: Option<Address>, token_id: TokenId) -> Result<(), Error> {
+        Self::require_initialized(&env)?;
         caller.require_auth();
         let data: TokenData = Self::load_token(&env, token_id)?;
         if data.owner != caller {
@@ -674,6 +695,7 @@ impl ClipsNftContract {
     }
 
     pub fn set_approval_for_all(env: Env, caller: Address, operator: Address, approved: bool) -> Result<(), Error> {
+        Self::require_initialized(&env)?;
         caller.require_auth();
         env.storage().persistent().set(&DataKey::ApprovalForAll(caller.clone(), operator.clone()), &approved);
         env.events().publish((symbol_short!("app_all"), caller.clone(), operator.clone()), ApprovalForAllEvent { owner: caller, operator, approved });
@@ -796,6 +818,7 @@ impl ClipsNftContract {
     }
 
     pub fn update_royalty_recipient(env: Env, caller: Address, token_id: TokenId, new_recipient: Address) -> Result<(), Error> {
+        Self::require_initialized(&env)?;
         caller.require_auth();
         let mut data = Self::load_token(&env, token_id)?;
         let old = data.royalty.recipients.get(0).ok_or(Error::InvalidRoyaltySplit)?.recipient.clone();
@@ -808,6 +831,7 @@ impl ClipsNftContract {
     }
 
     pub fn pay_royalty(env: Env, payer: Address, token_id: TokenId, sale_price: i128) -> Result<(), Error> {
+        Self::require_initialized(&env)?;
         payer.require_auth();
         if sale_price <= 0 { return Err(Error::InvalidSalePrice); }
         let data = Self::load_token(&env, token_id)?;
@@ -832,6 +856,7 @@ impl ClipsNftContract {
     }
 
     pub fn claim_royalties(env: Env, caller: Address, token_id: TokenId) -> Result<(), Error> {
+        Self::require_initialized(&env)?;
         caller.require_auth();
         let data = Self::load_token(&env, token_id)?;
         let recipient = data.royalty.recipients.get(0).ok_or(Error::InvalidRoyaltySplit)?.recipient;
@@ -972,6 +997,7 @@ impl ClipsNftContract {
 
     // Task 4: revoke a single-token approval
     pub fn revoke_approval(env: Env, caller: Address, token_id: TokenId) -> Result<(), Error> {
+        Self::require_initialized(&env)?;
         caller.require_auth();
         let data: TokenData = Self::load_token(&env, token_id)?;
         if data.owner != caller {
@@ -983,6 +1009,7 @@ impl ClipsNftContract {
 
     // Task 4: revoke all operator approvals for the caller
     pub fn revoke_all_approvals(env: Env, caller: Address, operator: Address) -> Result<(), Error> {
+        Self::require_initialized(&env)?;
         caller.require_auth();
         env.storage()
             .persistent()
@@ -1119,6 +1146,7 @@ impl ClipsNftContract {
         nonce: u64,
         signature: BytesN<64>,
     ) -> Result<TokenId, Error> {
+        Self::require_initialized(&env)?;
         to.require_auth();
         Self::require_not_paused(&env)?;
         Self::enforce_mint_cooldown(&env, &to)?;
@@ -1154,6 +1182,7 @@ impl ClipsNftContract {
     }
 
     pub fn set_token_uri(env: Env, owner: Address, token_id: TokenId, new_uri: String) -> Result<(), Error> {
+        Self::require_initialized(&env)?;
         owner.require_auth();
         let data = Self::load_token(&env, token_id)?;
         if data.owner != owner { return Err(Error::Unauthorized); }
@@ -1225,6 +1254,7 @@ impl ClipsNftContract {
         is_soulbound: bool,
         signatures: Vec<BytesN<64>>,
     ) -> Result<Vec<TokenId>, Error> {
+        Self::require_initialized(&env)?;
         to.require_auth();
         Self::require_not_paused(&env)?;
         Self::enforce_mint_cooldown(&env, &to)?;
@@ -1429,6 +1459,41 @@ impl ClipsNftContract {
         ContractInfo { name: Self::name(env.clone()), symbol: Self::symbol(env.clone()), version: VERSION, owner, platform_fee: Self::get_platform_fee(env) }
     }
 
+    /// Returns all contract metadata in a single call (issue #454).
+    pub fn get_contract_metadata(env: Env) -> Result<ContractMetadata, Error> {
+        Self::require_initialized(&env)?;
+        let owner: Address = env.storage().instance().get(&DataKey::Admin).expect("not init");
+        let collection_name = Self::name(env.clone());
+        let collection_symbol = Self::symbol(env.clone());
+        let platform_fee_bps = Self::get_platform_fee(env.clone());
+        let default_royalty_bps = Self::get_default_royalty_bps(env.clone());
+        Ok(ContractMetadata {
+            contract_name: String::from_str(&env, "ClipsNftContract"),
+            version: VERSION,
+            owner,
+            collection_name,
+            collection_symbol,
+            platform_fee_bps,
+            default_royalty_bps,
+        })
+    }
+
+    /// Returns all global configuration values in one call (issue #457).
+    pub fn get_global_config(env: Env) -> config::GlobalConfig {
+        config::get(&env)
+    }
+
+    /// Overwrites all global configuration values atomically (issue #457).
+    /// Caller must be the contract admin.
+    pub fn set_global_config(env: Env, admin: Address, cfg: config::GlobalConfig) -> Result<(), Error> {
+        Self::require_admin(&env, &admin)?;
+        if cfg.platform_fee_bps > 10_000 || cfg.default_royalty_bps > 10_000 {
+            return Err(Error::RoyaltyTooHigh);
+        }
+        config::set(&env, &cfg);
+        Ok(())
+    }
+
     pub fn circuit_breaker_enabled(env: Env) -> bool {
         env.storage().instance().get(&DataKey::CircuitBreakerEnabled).unwrap_or(DEFAULT_CIRCUIT_BREAKER_ENABLED)
     }
@@ -1502,6 +1567,7 @@ impl ClipsNftContract {
     }
 
     pub fn lock_metadata(env: Env, owner: Address, token_id: TokenId) -> Result<(), Error> {
+        Self::require_initialized(&env)?;
         owner.require_auth();
         let mut data = Self::load_token(&env, token_id)?;
         if data.owner != owner { return Err(Error::Unauthorized); }
@@ -1549,7 +1615,16 @@ impl ClipsNftContract {
     // Internal helpers
     // -------------------------------------------------------------------------
 
+    /// Returns `NotInitialized` if `init()` has not been called yet (issue #456).
+    fn require_initialized(env: &Env) -> Result<(), Error> {
+        if !env.storage().instance().has(&DataKey::Admin) {
+            return Err(Error::NotInitialized);
+        }
+        Ok(())
+    }
+
     fn require_admin(env: &Env, addr: &Address) -> Result<(), Error> {
+        Self::require_initialized(env)?;
         let admin: Address = env.storage().instance().get(&DataKey::Admin).expect("not init");
         if addr != &admin { return Err(Error::Unauthorized); }
         addr.require_auth();
