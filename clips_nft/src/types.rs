@@ -74,15 +74,12 @@ pub enum DataKey {
     PlatformFee,
     DefaultRoyaltyBps,
     Config,
-    /// List of supported payment currency addresses.
     SupportedCurrencies,
-    /// Blacklisted wallet address.
     Blacklisted(Address),
     /// Single-token approval: address approved to transfer token_id.
     Approval(TokenId),
     /// Operator approval: (owner, operator) → approved.
     OperatorApproval(Address, Address),
-    /// Minted supply counter per collection.
     CollectionSupply(u32),
     /// Maps token_id → clip_id (reverse of ClipIdMinted).
     TokenClipId(TokenId),
@@ -114,17 +111,11 @@ pub enum Error {
     InvalidBasisPoints = 10,
     /// Fee value is outside the allowed range.
     InvalidFee = 11,
-    /// Address is invalid or empty.
     InvalidAddress = 12,
-    /// Metadata URI is empty or malformed.
     InvalidURI = 13,
-    /// Collection limit is zero or exceeds the maximum.
     InvalidLimit = 14,
-    /// Caller is not authorized to update configuration.
     UnauthorizedConfigurationUpdate = 15,
-    /// Currency already exists in the supported list.
     DuplicateCurrency = 16,
-    /// Currency not found in the supported list.
     CurrencyNotFound = 17,
     /// Config values are out of range or structurally invalid.
     InvalidConfig = 18,
