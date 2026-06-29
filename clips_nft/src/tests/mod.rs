@@ -1,2 +1,2 @@
 mod config_tests;
-mod storage_cleanup_tests;
+mod event_counter_tests;
