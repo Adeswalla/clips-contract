@@ -2,6 +2,46 @@
 
 pub mod safe_math;
 
+mod blacklist;
+mod clip_id_storage;
+mod config;
+mod config_guard;
+mod config_validator;
+mod creator_storage;
+mod default_royalty;
+mod minted_clip_index;
+mod payment_currency;
+mod platform_fee;
+mod platform_recipient;
+mod royalty_storage;
+mod token_approval;
+mod token_metadata_storage;
+mod token_storage;
+mod types;
+mod wallet_token_index;
+mod collection_info;
+mod metadata_config;
+
+pub use config::{
+    get_config, set_config, Config, CONTRACT_VERSION, MAX_BATCH_MINT_SIZE, MAX_COLLECTION_SIZE,
+};
+pub use config_guard::require_config_admin;
+pub use config_validator::MAX_COLLECTION_LIMIT;
+pub use default_royalty::{
+    get_default_royalty_bps, set_default_royalty_bps, DEFAULT_ROYALTY_BPS, MAX_ROYALTY_BPS,
+};
+pub use payment_currency::{add_currency, get_currencies, is_supported, remove_currency};
+pub use platform_fee::{get_platform_fee, set_platform_fee, MAX_PLATFORM_FEE_BPS};
+pub use platform_recipient::{
+    get_platform_recipient, save_platform_recipient, update_platform_recipient,
+};
+pub use collection_info::{
+    get_name, get_symbol, set_name, set_symbol, DEFAULT_NAME, DEFAULT_SYMBOL,
+};
+pub use metadata_config::{
+    get_max_metadata_size, set_max_metadata_size, validate_metadata_size, DEFAULT_MAX_METADATA_SIZE,
+};
+
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, xdr::ToXdr, Address, Bytes,
     BytesN, Env, String, Vec,
@@ -379,69 +419,13 @@ pub struct WithdrawExecutedEvent { pub amount: i128, pub recipient: Address }
 // Contract
 // =============================================================================
 
+use types::{DataKey, Error, MintEvent, Royalty, RoyaltyInfo, TokenData, TokenId};
+
 #[contract]
 pub struct ClipsNftContract;
 
 #[contractimpl]
 impl ClipsNftContract {
-    // -------------------------------------------------------------------------
-    // Init
-    // -------------------------------------------------------------------------
-
-//! ClipCashNFT — Soroban smart contract entry point.
-//!
-//! This module is the single gateway for all public contract methods.
-//! It re-exports types and registers the contract implementation
-//! via the `#[contract]` / `#[contractimpl]` macros.
-
-#![no_std]
-
-mod blacklist;
-mod clip_id_storage;
-mod config;
-mod config_guard;
-mod config_validator;
-mod creator_storage;
-mod default_royalty;
-mod minted_clip_index;
-mod payment_currency;
-mod platform_fee;
-mod royalty_storage;
-mod token_approval;
-mod token_metadata_storage;
-mod types;
-mod wallet_token_index;
-
-pub use blacklist::{add_wallet, is_blacklisted, remove_wallet};
-pub use creator_storage::{get_creator, set_creator};
-pub use frozen_token::{freeze_token, is_frozen, unfreeze_token};
-pub use token_uri_storage::{get_token_uri, set_token_uri};
-pub use wallet_token_index::{add_token_to_wallet, get_wallet_tokens, remove_token_from_wallet};
-pub use config::{get_config, set_config, Config, CONTRACT_VERSION};
-pub use default_royalty::{
-    get_default_royalty_bps, set_default_royalty_bps, DEFAULT_ROYALTY_BPS, MAX_ROYALTY_BPS,
-};
-pub use operator_approval::{is_operator, remove_operator, save_operator};
-pub use pause_state::{get_pause_state, save_pause_state};
-pub use platform_fee::{get_platform_fee, set_platform_fee, MAX_PLATFORM_FEE_BPS};
-pub use config_guard::require_config_admin;
-pub use config_validator::{
-    validate_collection_limit, validate_config, validate_fee, validate_royalty_bps, validate_uri,
-    MAX_COLLECTION_LIMIT,
-};
-pub use payment_currency::{add_currency, get_currencies, is_supported, remove_currency};
-pub use types::{DataKey, Error, MintEvent, Royalty, RoyaltyInfo, TokenData, TokenId};
-
-use soroban_sdk::{
-    contract, contractimpl, BytesN, Env, String,
-    Address,
-};
-
-#[contract]
-pub struct ClipCashNFT;
-
-#[contractimpl]
-impl ClipCashNFT {
     // ─── Initialization ──────────────────────────────────────────────────────
 
     /// Initialize the contract and set the admin.
@@ -453,6 +437,7 @@ impl ClipCashNFT {
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::NextTokenId, &0u32);
         env.storage().instance().set(&DataKey::Paused, &false);
+        platform_recipient::save_platform_recipient(&env, &admin);
     }
 
     // ─── Config ───────────────────────────────────────────────────────────────
@@ -462,7 +447,7 @@ impl ClipCashNFT {
     pub fn set_config(env: Env, admin: Address, cfg: Config) -> Result<(), Error> {
         config_guard::require_config_admin(&env, &admin)?;
         config_validator::validate_config(&env, &cfg)?;
-        config::set_config(&env, cfg)
+        config::set_config(&env, cfg, admin)
     }
 
     /// Return the current [`Config`], or `None` before initialization.
@@ -534,6 +519,44 @@ impl ClipCashNFT {
         Ok(())
     }
 
+    /// Return the collection name.
+    pub fn name(env: Env) -> String {
+        get_name(&env)
+    }
+
+    /// Set the collection name. Admin only.
+    pub fn set_name(env: Env, admin: Address, name: String) -> Result<(), Error> {
+        Self::require_admin(&env, &admin)?;
+        admin.require_auth();
+        set_name(&env, &name);
+        Ok(())
+    }
+
+    /// Return the collection symbol.
+    pub fn symbol(env: Env) -> String {
+        get_symbol(&env)
+    }
+
+    /// Set the collection symbol. Admin only.
+    pub fn set_symbol(env: Env, admin: Address, symbol: String) -> Result<(), Error> {
+        Self::require_admin(&env, &admin)?;
+        admin.require_auth();
+        set_symbol(&env, &symbol);
+        Ok(())
+    }
+
+    /// Return the maximum metadata size in bytes.
+    pub fn get_max_metadata_size(env: Env) -> u32 {
+        get_max_metadata_size(&env)
+    }
+
+    /// Set the maximum metadata size in bytes. Admin only.
+    pub fn set_max_metadata_size(env: Env, admin: Address, size: u32) -> Result<(), Error> {
+        Self::require_admin(&env, &admin)?;
+        admin.require_auth();
+        set_max_metadata_size(&env, size)
+    }
+
     // ─── Default Royalty ─────────────────────────────────────────────────────
 
     /// Set the contract-wide default royalty in basis points (max 10 000 = 100 %).
@@ -560,6 +583,47 @@ impl ClipCashNFT {
     /// Return the current platform fee in basis points.
     pub fn get_platform_fee(env: Env) -> u32 {
         platform_fee::get_platform_fee(&env)
+    }
+
+    // ─── Treasury Wallet (Platform Recipient) ───────────────────────────────
+
+    /// Save the treasury wallet that receives platform fees. Admin only.
+    pub fn save_platform_recipient(
+        env: Env,
+        admin: Address,
+        recipient: Address,
+    ) -> Result<(), Error> {
+        config_guard::require_config_admin(&env, &admin)?;
+        platform_recipient::save_platform_recipient(&env, &recipient);
+        env.events().publish(
+            (symbol_short!("plat_rcp"), recipient.clone()),
+            PlatformRecipientUpdatedEvent {
+                new_recipient: recipient,
+            },
+        );
+        Ok(())
+    }
+
+    /// Retrieve the treasury wallet that receives platform fees.
+    pub fn get_platform_recipient(env: Env) -> Result<Address, Error> {
+        platform_recipient::get_platform_recipient(&env)
+    }
+
+    /// Update the treasury wallet that receives platform fees. Admin only.
+    pub fn update_platform_recipient(
+        env: Env,
+        admin: Address,
+        recipient: Address,
+    ) -> Result<(), Error> {
+        config_guard::require_config_admin(&env, &admin)?;
+        platform_recipient::update_platform_recipient(&env, &recipient)?;
+        env.events().publish(
+            (symbol_short!("plat_rcp"), recipient.clone()),
+            PlatformRecipientUpdatedEvent {
+                new_recipient: recipient,
+            },
+        );
+        Ok(())
     }
 
     // ─── Payment Currencies ────────────────────────────────────────────────
@@ -642,6 +706,9 @@ impl ClipCashNFT {
         admin.require_auth();
         Self::require_not_paused(&env)?;
 
+        // Validate metadata size
+        validate_metadata_size(&env, &metadata_uri)?;
+
         if env.storage().persistent().has(&DataKey::ClipIdMinted(clip_id)) {
             return Err(Error::ClipAlreadyMinted);
         }
@@ -656,7 +723,7 @@ impl ClipCashNFT {
             .unwrap_or(0);
 
         token_storage::set_token(&env, token_id, &TokenData { owner: to.clone(), clip_id });
-        token_storage::set_metadata(&env, token_id, &metadata_uri);
+        token_storage::set_metadata(&env, token_id, &metadata_uri)?;
         token_storage::set_royalty(&env, token_id, &royalty);
         env.storage()
             .persistent()
@@ -816,6 +883,13 @@ impl ClipCashNFT {
 
     // ─── Internal helpers ────────────────────────────────────────────────────
 
+    fn require_initialized(env: &Env) -> Result<(), Error> {
+        if !env.storage().instance().has(&DataKey::Admin) {
+            return Err(Error::NotInitialized);
+        }
+        Ok(())
+    }
+
     fn require_admin(env: &Env, caller: &Address) -> Result<(), Error> {
         let admin: Address = env
             .storage()
@@ -840,3 +914,6 @@ impl ClipCashNFT {
         Ok(())
     }
 }
+
+/// Backward-compatible alias used by configuration tests.
+pub type ClipCashNFT = ClipsNftContract;

@@ -53,6 +53,8 @@ pub enum DataKey {
     /// Maps clip_id → token_id; also used as existence marker for a minted clip.
     ClipIdMinted(u32),
     PlatformFee,
+    /// Treasury wallet that receives platform fees.
+    PlatformRecipient,
     DefaultRoyaltyBps,
     Config,
     /// List of supported payment currency addresses.
@@ -69,6 +71,12 @@ pub enum DataKey {
     TokenClipId(u32),
     /// Existence marker for the minted-clip index (bool).
     ClipMinted(u32),
+    /// Collection name.
+    Name,
+    /// Collection symbol.
+    Symbol,
+    /// Maximum metadata size in bytes.
+    MaxMetadataSize,
 }
 
 #[contracterror]
@@ -100,4 +108,6 @@ pub enum Error {
     DuplicateCurrency = 16,
     /// Currency not found in the supported list.
     CurrencyNotFound = 17,
+    /// Configuration value is outside allowed bounds.
+    InvalidConfig = 18,
 }
