@@ -36,6 +36,7 @@
 
 #![no_std]
 
+pub mod metadata;
 pub mod safe_math;
 
 use soroban_sdk::{
