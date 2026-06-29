@@ -1,5 +1,6 @@
 #![no_std]
 
+pub mod metadata;
 pub mod safe_math;
 pub mod virality_score;
 pub mod social_platform;
