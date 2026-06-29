@@ -1,6 +1,10 @@
 #![no_std]
 
 pub mod safe_math;
+pub mod virality_score;
+pub mod social_platform;
+pub mod video_reference;
+pub mod metadata_uri_builder;
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, xdr::ToXdr, Address, Bytes,
