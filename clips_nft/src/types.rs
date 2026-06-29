@@ -69,6 +69,14 @@ pub enum DataKey {
     TokenClipId(u32),
     /// Existence marker for the minted-clip index (bool).
     ClipMinted(u32),
+    /// AI-generated virality score for a token (issue #552).
+    ViralityScore(u32),
+    /// Originating social platform for a token (issue #553).
+    SocialPlatform(u32),
+    /// Original video source ID for a token (issue #554).
+    VideoSourceId(u32),
+    /// Original video source URL for a token (issue #554).
+    VideoSourceUrl(u32),
 }
 
 #[contracterror]
