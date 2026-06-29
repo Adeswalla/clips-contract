@@ -441,10 +441,8 @@ pub use metadata::{
     validate_external_url, validate_description, validate_attributes, SUPPORTED_PROTOCOLS,
 };
 
-use soroban_sdk::{
-    contract, contractimpl, BytesN, Env, String,
-    Address,
-};
+use soroban_sdk::{contract, contractimpl, Address, Env};
+use types::Config;
 
 #[contract]
 pub struct ClipCashNFT;
