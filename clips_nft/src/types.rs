@@ -69,6 +69,14 @@ pub enum DataKey {
     TokenClipId(u32),
     /// Existence marker for the minted-clip index (bool).
     ClipMinted(u32),
+    /// Metadata schema version (instance storage).
+    MetadataVersion,
+    /// Per-token timestamps: created_at / updated_at (persistent storage).
+    MetadataTimestamps(u32),
+    /// Per-token clip information: clip_id, duration, category, language (persistent storage).
+    ClipInfo(u32),
+    /// Per-token AI virality score (persistent storage).
+    ViralityScore(u32),
 }
 
 #[contracterror]

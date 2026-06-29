@@ -398,11 +398,14 @@ impl ClipsNftContract {
 
 mod blacklist;
 mod clip_id_storage;
+mod clip_info_metadata;
 mod config;
 mod config_guard;
 mod config_validator;
 mod creator_storage;
 mod default_royalty;
+mod metadata_timestamps;
+mod metadata_version;
 mod minted_clip_index;
 mod payment_currency;
 mod platform_fee;
@@ -410,6 +413,7 @@ mod royalty_storage;
 mod token_approval;
 mod token_metadata_storage;
 mod types;
+mod virality_score;
 mod wallet_token_index;
 
 pub use blacklist::{add_wallet, is_blacklisted, remove_wallet};
