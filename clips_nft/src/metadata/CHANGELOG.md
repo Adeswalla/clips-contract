@@ -1,5 +1,44 @@
 # Metadata Module Changelog
 
+## [Unreleased]
+
+### Added
+
+#### ClipMetadata Implementation
+- **`ClipMetadata`** struct - Primary metadata structure for ClipCash NFTs
+  - `clip_id`: Unique identifier for the video clip (required, u32)
+  - `metadata_uri`: Primary metadata URI (required, supports IPFS/Arweave/HTTPS)
+  - `image`: Optional image preview URL for thumbnails/poster frames
+  - `animation_url`: Optional animation/video content URL
+  - `description`: Optional human-readable description
+  - `external_url`: Optional external link for additional information
+  - `attributes`: Vector of trait attributes
+- **Helper methods**:
+  - `ClipMetadata::new()` - Create minimal metadata with required fields only
+  - `ClipMetadata::with_full_data()` - Create complete metadata with all fields
+  - `ClipMetadata::has_optional_fields()` - Check if any optional fields are populated
+  - `ClipMetadata::attribute_count()` - Get the number of attributes
+- **Serialization support**: Full `contracttype` support for Soroban SDK
+- **Documentation**: Comprehensive doc comments with examples and standards compliance notes
+- **Testing**: Complete test suite covering:
+  - Minimal metadata creation
+  - Full metadata creation with all fields
+  - Optional field detection
+  - Attribute counting
+  - Clone and equality operations
+
+#### Standards Compliance
+- OpenSea Metadata Standard compatible
+- EIP-721 metadata JSON schema compliant
+- Soroban SDK contracttype serialization/deserialization
+- ClipCash NFT-specific requirements (clip_id uniqueness)
+
+#### Documentation Updates
+- Updated `README.md` with ClipMetadata usage examples
+- Added ClipMetadata to module structure documentation
+- Included examples for minimal and full metadata creation
+- Added attribute handling examples
+
 ## [Initial Release] - 2024
 
 ### Added
