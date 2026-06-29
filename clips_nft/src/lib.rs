@@ -407,6 +407,7 @@ mod config_guard;
 mod config_validator;
 mod creator_storage;
 mod default_royalty;
+pub mod metadata;
 mod minted_clip_index;
 mod payment_currency;
 mod platform_fee;
@@ -435,6 +436,13 @@ pub use config_validator::{
 };
 pub use payment_currency::{add_currency, get_currencies, is_supported, remove_currency};
 pub use types::{DataKey, Error, MintEvent, Royalty, RoyaltyInfo, TokenData, TokenId};
+
+// Re-export metadata module components
+pub use metadata::{
+    Attribute, TokenMetadata,
+    validate_url, validate_metadata_uri, validate_image_url, validate_animation_url,
+    validate_external_url, validate_description, validate_attributes, SUPPORTED_PROTOCOLS,
+};
 
 use soroban_sdk::{
     contract, contractimpl, BytesN, Env, String,
