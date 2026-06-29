@@ -69,25 +69,30 @@ pub enum DataKey {
     Token(TokenId),
     Metadata(TokenId),
     Royalty(TokenId),
+    /// Maps clip_id → token_id; also used as existence marker for a minted clip.
     ClipIdMinted(u32),
     PlatformFee,
     DefaultRoyaltyBps,
     Config,
     SupportedCurrencies,
     Blacklisted(Address),
+    /// Single-token approval: address approved to transfer token_id.
     Approval(TokenId),
+    /// Operator approval: (owner, operator) → approved.
     OperatorApproval(Address, Address),
     CollectionSupply(u32),
+    /// Maps token_id → clip_id (reverse of ClipIdMinted).
     TokenClipId(TokenId),
+    /// Existence marker for the minted-clip index (bool).
     ClipMinted(u32),
-    Creator(TokenId),
-    FrozenToken(TokenId),
-    PlatformRevenue,
-    RoyaltyHistory(TokenId),
-    RoyaltyRecipient(TokenId),
-    TokenUri(TokenId),
-    WalletTokens(Address),
-    EventCounter(u32),
+    /// AI-generated virality score for a token (issue #552).
+    ViralityScore(u32),
+    /// Originating social platform for a token (issue #553).
+    SocialPlatform(u32),
+    /// Original video source ID for a token (issue #554).
+    VideoSourceId(u32),
+    /// Original video source URL for a token (issue #554).
+    VideoSourceUrl(u32),
 }
 
 #[contracterror]
@@ -104,6 +109,7 @@ pub enum Error {
     SignerNotSet = 8,
     InvalidSignature = 9,
     InvalidBasisPoints = 10,
+    /// Fee value is outside the allowed range.
     InvalidFee = 11,
     InvalidAddress = 12,
     InvalidURI = 13,
@@ -111,7 +117,10 @@ pub enum Error {
     UnauthorizedConfigurationUpdate = 15,
     DuplicateCurrency = 16,
     CurrencyNotFound = 17,
+    /// Config values are out of range or structurally invalid.
     InvalidConfig = 18,
+    /// Sale price must be positive.
     InvalidSalePrice = 19,
+    /// Royalty amount calculation overflowed.
     RoyaltyOverflow = 20,
 }
