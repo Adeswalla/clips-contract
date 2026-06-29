@@ -77,6 +77,8 @@ pub enum DataKey {
     ClipInfo(u32),
     /// Per-token AI virality score (persistent storage).
     ViralityScore(u32),
+    /// Collection-level metadata: name, symbol, description, banner_uri.
+    CollectionMetadata,
 }
 
 #[contracterror]

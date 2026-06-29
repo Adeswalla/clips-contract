@@ -399,6 +399,7 @@ impl ClipsNftContract {
 mod blacklist;
 mod clip_id_storage;
 mod clip_info_metadata;
+mod collection_metadata;
 mod config;
 mod config_guard;
 mod config_validator;
