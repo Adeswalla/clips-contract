@@ -425,6 +425,7 @@ mod token_metadata_storage;
 mod token_storage;
 mod token_uri_storage;
 mod types;
+mod virality_score;
 mod wallet_token_index;
 
 mod event_counter_storage;
