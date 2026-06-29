@@ -88,22 +88,14 @@ pub enum DataKey {
     TokenClipId(TokenId),
     /// Existence marker for the minted-clip index (bool).
     ClipMinted(u32),
-    /// Creator wallet for a token.
-    Creator(TokenId),
-    /// Whether a token is frozen (persistent).
-    FrozenToken(TokenId),
-    /// Cumulative platform revenue in the smallest unit.
-    PlatformRevenue,
-    /// Royalty payment history for a token.
-    RoyaltyHistory(TokenId),
-    /// Royalty recipient address for a token.
-    RoyaltyRecipient(TokenId),
-    /// Custom metadata URI override for a token.
-    TokenUri(TokenId),
-    /// All token IDs owned by a wallet.
-    WalletTokens(Address),
-    /// Per-event-type emission counter (event_type_id → count).
-    EventCounter(u32),
+    /// AI-generated virality score for a token (issue #552).
+    ViralityScore(u32),
+    /// Originating social platform for a token (issue #553).
+    SocialPlatform(u32),
+    /// Original video source ID for a token (issue #554).
+    VideoSourceId(u32),
+    /// Original video source URL for a token (issue #554).
+    VideoSourceUrl(u32),
 }
 
 #[contracterror]
