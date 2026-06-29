@@ -1,6 +1,7 @@
 #![no_std]
 
 pub mod safe_math;
+pub mod mint_validator;
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, xdr::ToXdr, Address, Bytes,
